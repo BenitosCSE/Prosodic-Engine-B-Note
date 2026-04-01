@@ -1,0 +1,5 @@
+{
+  "name": "Prosodic Engine B-Note",
+  "description": "An exclusive PWA application for creating notes and song lyrics based on the author\u0027s Ukrainian language prosodic text analysis engine with deep search and the Tiptap editor.",
+  "requestFramePermissions": []
+}

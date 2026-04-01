@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+@theme {
+  --color-matte-black: #0a0a0a;
+  --color-matte-gray: #1a1a1a;
+  --color-orange-accent: #ff6b00;
+  --color-orange-glow: #ff8c00;
+  
+  --background-matte: linear-gradient(135deg, #121212 0%, #0a0a0a 100%);
+  --orange-gradient: linear-gradient(90deg, #ff6b00 0%, #ff9e00 100%);
+}
+
+@layer base {
+  body {
+    @apply bg-matte-black text-gray-200 font-sans overflow-hidden;
+    background: var(--background-matte);
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0a0a0a;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--orange-gradient);
+    border-radius: 10px;
+  }
+}
+
+@layer components {
+  .orange-border {
+    border: 1px solid transparent;
+    border-image: var(--orange-gradient) 1;
+  }
+
+  .orange-text-gradient {
+    background: var(--orange-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .premium-title-effect {
+    background: linear-gradient(180deg, #ff9e00 0%, #ff6b00 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 10px 20px rgba(0, 0, 0, 0.8)) drop-shadow(0 0 15px rgba(255, 107, 0, 0.15));
+    letter-spacing: 0.25em;
+    font-weight: 900;
+  }
+
+  .matte-card {
+    @apply bg-matte-gray/50 backdrop-blur-md border border-white/5 rounded-lg;
+  }
+
+  /* Tiptap Editor Styles */
+  .ProseMirror {
+    @apply outline-none min-h-[500px] p-4 text-lg leading-relaxed;
+  }
+
+  .ProseMirror p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    float: left;
+    color: #4b5563;
+    pointer-events: none;
+    height: 0;
+  }
+
+  .adaptive-image {
+    @apply max-w-full h-auto rounded-lg my-4 border border-white/10;
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+    object-fit: contain;
+    max-height: 70vh;
+  }
+
+  .ProseMirror h1 { 
+    @apply text-3xl font-bold mb-4 text-orange-accent;
+  }
+  .ProseMirror h2 { 
+    @apply text-2xl font-bold mb-3 text-orange-accent;
+  }
+  .ProseMirror h3 { 
+    @apply text-xl font-bold mb-2 text-orange-accent;
+  }
+  
+  .ProseMirror blockquote {
+    @apply border-l-4 border-orange-accent pl-4 italic my-4 text-gray-400;
+  }
+
+  .ProseMirror code {
+    @apply bg-black/50 px-1.5 py-0.5 rounded font-mono text-orange-accent text-sm;
+  }
+}
+
+.watermark {
+  @apply fixed left-0 w-full text-center font-black opacity-[0.03] pointer-events-none uppercase whitespace-nowrap z-0 select-none;
+  font-size: clamp(2rem, 12vw, 12rem);
+  font-family: 'Inter', sans-serif;
+  animation: watermark-scroll 80s linear infinite;
+}
+
+@keyframes watermark-scroll {
+  0% { transform: translateY(-30vh); }
+  100% { transform: translateY(110vh); }
+}
+
+.app-container {
+  @apply relative z-10 flex flex-col h-screen max-w-[860px] mx-auto border-x border-white/5 shadow-2xl bg-black/20;
+}
+
