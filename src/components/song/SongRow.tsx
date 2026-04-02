@@ -65,6 +65,7 @@ const SongRow: React.FC<SongRowProps> = ({
             onChange={(e) => onUpdate(row.id, e.target.value)}
             className="bg-transparent text-orange-accent font-bold uppercase tracking-[0.2em] text-center focus:outline-none min-w-[120px]"
             placeholder="[SECTION]"
+            spellCheck={false}
           />
           <div className="h-px flex-grow bg-orange-accent/20" />
         </div>

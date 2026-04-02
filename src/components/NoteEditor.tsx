@@ -100,6 +100,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
     ],
     content: note?.content || '',
     editorProps: {
+      spellCheck: 'false',
       attributes: {
         class: 'ProseMirror focus:outline-none',
       },
@@ -148,9 +149,9 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
   if (!editor) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-matte-black animate-in fade-in slide-in-from-bottom-4 duration-300">
+    <div className="fixed top-[72px] inset-x-0 bottom-0 z-50 flex flex-col bg-matte-black animate-in fade-in slide-in-from-bottom-4 duration-300">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-1 p-2 border-b border-white/10 bg-matte-gray/80 backdrop-blur-md sticky top-0 z-10">
+      <div className="flex flex-wrap items-center gap-1 p-2 border-b border-white/10 bg-matte-gray/80 backdrop-blur-md z-10">
         <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-md text-gray-400 mr-2">
           <X size={20} />
         </button>
@@ -425,7 +426,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
       )}
 
       {/* Editor Content */}
-      <div className="flex-grow overflow-y-auto bg-matte-black/50">
+      <div className="flex-grow overflow-y-auto bg-matte-black/50 pb-40">
         <EditorContent editor={editor} className="max-w-4xl mx-auto" />
       </div>
 

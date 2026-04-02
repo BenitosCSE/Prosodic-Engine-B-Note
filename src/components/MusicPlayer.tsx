@@ -153,7 +153,7 @@ const MusicPlayer: React.FC = () => {
   const currentTrack = tracks[currentTrackIndex];
 
   return (
-    <div className="fixed bottom-[88px] left-1/2 -translate-x-1/2 w-full max-w-[860px] z-40 px-4 pointer-events-none">
+    <div className="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-[860px] z-50 bg-matte-black/95 backdrop-blur-xl border-b border-white/10">
       <audio 
         ref={audioRef} 
         onTimeUpdate={handleTimeUpdate}
@@ -162,15 +162,47 @@ const MusicPlayer: React.FC = () => {
         crossOrigin="anonymous"
       />
 
-      <div className="pointer-events-auto">
-        <AnimatePresence>
-          {isOpen && (
-            <motion.div 
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 20 }}
-              className="matte-card p-4 shadow-2xl border-orange-accent/20 mb-2 overflow-hidden"
-            >
+      <div className="p-3 flex items-center gap-4">
+        <button 
+          onClick={() => setIsOpen(!isOpen)}
+          className={`p-2 rounded-md transition-colors ${isOpen ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-400 hover:bg-white/5'}`}
+        >
+          <ListMusic size={20} />
+        </button>
+
+        <div className="flex-grow min-w-0">
+          <div className="text-[10px] font-bold text-gray-200 truncate">
+            {currentTrack ? currentTrack.name.replace(/\.[^/.]+$/, "") : "B-PLAYER READY"}
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <div className="flex-grow h-1 bg-white/5 rounded-full overflow-hidden">
+              <div className="h-full bg-orange-accent transition-all duration-300" style={{ width: `${progress}%` }} />
+            </div>
+            <span className="text-[8px] font-mono text-gray-600 w-8">{audioRef.current ? formatTime(audioRef.current.currentTime) : "0:00"}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button onClick={prevTrack} className="p-1 text-gray-500 hover:text-white"><SkipBack size={18} /></button>
+          <button 
+            onClick={togglePlay}
+            className="w-10 h-10 rounded-full bg-orange-accent flex items-center justify-center text-black hover:scale-105 active:scale-95 transition-all"
+          >
+            {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
+          </button>
+          <button onClick={nextTrack} className="p-1 text-gray-500 hover:text-white"><SkipForward size={18} /></button>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="border-t border-white/5 bg-black/40 overflow-hidden"
+          >
+            <div className="p-4">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
                   <Music size={16} className="text-orange-accent" />
@@ -219,7 +251,7 @@ const MusicPlayer: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-1">
+                <div className="max-h-60 overflow-y-auto custom-scrollbar space-y-1">
                   {tracks.map((track, idx) => (
                     <button
                       key={track.id}
@@ -231,42 +263,10 @@ const MusicPlayer: React.FC = () => {
                   ))}
                 </div>
               )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <div className="matte-card p-3 flex items-center gap-4 shadow-xl border-white/10">
-          <button 
-            onClick={() => setIsOpen(!isOpen)}
-            className={`p-2 rounded-md transition-colors ${isOpen ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-400 hover:bg-white/5'}`}
-          >
-            <ListMusic size={20} />
-          </button>
-
-          <div className="flex-grow min-w-0">
-            <div className="text-[10px] font-bold text-gray-200 truncate">
-              {currentTrack ? currentTrack.name.replace(/\.[^/.]+$/, "") : "B-PLAYER READY"}
             </div>
-            <div className="flex items-center gap-2 mt-1">
-              <div className="flex-grow h-1 bg-white/5 rounded-full overflow-hidden">
-                <div className="h-full bg-orange-accent transition-all duration-300" style={{ width: `${progress}%` }} />
-              </div>
-              <span className="text-[8px] font-mono text-gray-600 w-8">{audioRef.current ? formatTime(audioRef.current.currentTime) : "0:00"}</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button onClick={prevTrack} className="p-1 text-gray-500 hover:text-white"><SkipBack size={18} /></button>
-            <button 
-              onClick={togglePlay}
-              className="w-10 h-10 rounded-full bg-orange-accent flex items-center justify-center text-black hover:scale-105 active:scale-95 transition-all"
-            >
-              {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
-            </button>
-            <button onClick={nextTrack} className="p-1 text-gray-500 hover:text-white"><SkipForward size={18} /></button>
-          </div>
-        </div>
-      </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

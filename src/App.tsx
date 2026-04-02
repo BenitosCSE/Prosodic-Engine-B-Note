@@ -145,7 +145,8 @@ export default function App() {
   };
 
   return (
-    <div className="app-container">
+    <div className="app-container pt-[72px]">
+      <MusicPlayer />
       {/* Background Watermark */}
       <div className="watermark">BENITO EUGENIO</div>
 
@@ -160,9 +161,6 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-grow overflow-hidden relative z-10">
         {renderContent()}
-        
-        {/* Music Player inside relative container */}
-        <MusicPlayer />
       </main>
 
       {/* Bottom Navigation */}

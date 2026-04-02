@@ -242,7 +242,7 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, onSave, onClose, onDelete
       )}
 
       {/* Content */}
-      <div className="flex-grow overflow-y-auto p-2 sm:p-6 space-y-1 no-scrollbar" onPaste={handlePaste}>
+      <div className="flex-grow overflow-y-auto p-2 sm:p-6 space-y-1 no-scrollbar pb-40" onPaste={handlePaste}>
         <div className="max-w-[800px] mx-auto space-y-1">
           {rows.map(row => (
             <SongRow 
