@@ -12,16 +12,19 @@ const MetricsRow: React.FC<MetricsRowProps> = ({ metrics, bpm }) => {
   const isOverloaded = metrics.BPMmax < bpm * 0.9;
 
   return (
-    <div className="flex flex-wrap items-center gap-3 mt-1 text-[10px] uppercase tracking-wider text-gray-500 font-bold animate-in fade-in duration-150">
-      <span>{metrics.S} скл</span>
-      <span className="opacity-30">•</span>
-      <span>співуваність {Math.round(metrics.singability)}%</span>
-      <span className="opacity-30">•</span>
-      <span className={isOverloaded ? 'text-orange-accent' : ''}>
-        BPM max {Math.round(metrics.BPMmax)}
-      </span>
-      <span className="opacity-30">•</span>
-      <span>точність {Math.round(metrics.A * 100)}%</span>
+    <div className="flex items-center justify-between gap-2 mt-0.5 text-[9px] uppercase tracking-wider text-gray-500/80 font-bold animate-in fade-in duration-150 border-t border-white/5 pt-1">
+      <div className="flex items-center gap-2">
+        <span>{metrics.S} скл</span>
+        <span className="opacity-30">•</span>
+        <span>співуваність {Math.round(metrics.singability)}%</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className={isOverloaded ? 'text-orange-accent' : ''}>
+          BPM max {Math.round(metrics.BPMmax)}
+        </span>
+        <span className="opacity-30">•</span>
+        <span>точність {Math.round(metrics.A * 100)}%</span>
+      </div>
     </div>
   );
 };

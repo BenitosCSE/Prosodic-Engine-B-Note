@@ -11,10 +11,11 @@ import {
   Bold, Italic, Underline as UnderlineIcon, 
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
   Heading1, Heading2, 
-  Image as ImageIcon, Save, Copy, Trash2, X, Tag, Palette, Type
+  Image as ImageIcon, Save, Copy, Trash2, X, Tag, Palette, Type, ChevronDown
 } from 'lucide-react';
 import { Note, Group } from '../db';
 import { MODERN_STYLES } from '../constants/editorStyles';
+import { MultiSelectionPlugin, applyToAllSelections } from '../lib/multiSelectionPlugin';
 
 // Helper to parse CSS string to React style object
 const parseStyleString = (styleString: string): React.CSSProperties => {
@@ -71,6 +72,11 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
   const [showSizePicker, setShowSizePicker] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  // Last used values for split buttons
+  const [lastColor, setLastColor] = useState<string>(localStorage.getItem('lastColor') || '#ff6b00');
+  const [lastStyle, setLastStyle] = useState<string | null>(localStorage.getItem('lastStyle'));
+  const [lastSize, setLastSize] = useState<string>(localStorage.getItem('lastSize') || '18px');
+
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -90,6 +96,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
       Placeholder.configure({
         placeholder: 'Write your ideas here...',
       }),
+      MultiSelectionPlugin(),
     ],
     content: note?.content || '',
     editorProps: {
@@ -150,13 +157,13 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
         
         <div className="h-6 w-[1px] bg-white/10 mx-1" />
 
-        <button onClick={() => editor.chain().focus().toggleBold().run()} className={`p-2 rounded-md ${editor.isActive('bold') ? 'bg-orange-accent/20 text-orange-accent' : 'hover:bg-white/10'}`}>
+        <button onClick={() => applyToAllSelections(editor, (chain) => chain.toggleBold())} className={`p-2 rounded-md ${editor.isActive('bold') ? 'bg-orange-accent/20 text-orange-accent' : 'hover:bg-white/10'}`}>
           <Bold size={18} />
         </button>
-        <button onClick={() => editor.chain().focus().toggleItalic().run()} className={`p-2 rounded-md ${editor.isActive('italic') ? 'bg-orange-accent/20 text-orange-accent' : 'hover:bg-white/10'}`}>
+        <button onClick={() => applyToAllSelections(editor, (chain) => chain.toggleItalic())} className={`p-2 rounded-md ${editor.isActive('italic') ? 'bg-orange-accent/20 text-orange-accent' : 'hover:bg-white/10'}`}>
           <Italic size={18} />
         </button>
-        <button onClick={() => editor.chain().focus().toggleUnderline().run()} className={`p-2 rounded-md ${editor.isActive('underline') ? 'bg-orange-accent/20 text-orange-accent' : 'hover:bg-white/10'}`}>
+        <button onClick={() => applyToAllSelections(editor, (chain) => chain.toggleUnderline())} className={`p-2 rounded-md ${editor.isActive('underline') ? 'bg-orange-accent/20 text-orange-accent' : 'hover:bg-white/10'}`}>
           <UnderlineIcon size={18} />
         </button>
 
@@ -186,15 +193,24 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
 
         <div className="h-6 w-[1px] bg-white/10 mx-1" />
 
-        {/* Color Picker */}
-        <div className="relative">
+        {/* Color Split Button */}
+        <div className="relative flex flex-col items-center">
+          <button 
+            onClick={() => {
+              applyToAllSelections(editor, (chain) => chain.setColor(lastColor));
+            }}
+            className="p-1.5 hover:bg-white/10 rounded-t-md text-gray-400 transition-colors"
+            title={`Apply last color: ${lastColor}`}
+          >
+            <Palette size={18} style={{ color: lastColor }} />
+          </button>
           <button 
             onClick={() => { setShowColorPicker(!showColorPicker); setShowStylePicker(false); setShowGroupPicker(false); setShowSizePicker(false); }}
-            className={`p-2 rounded-md hover:bg-white/10 transition-colors ${showColorPicker ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-400'}`}
-            title="Text Color"
+            className={`w-full flex justify-center py-0.5 rounded-b-md hover:bg-white/10 transition-colors ${showColorPicker ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-500'}`}
           >
-            <Palette size={18} />
+            <ChevronDown size={10} />
           </button>
+          
           {showColorPicker && (
             <div className="absolute top-full left-0 mt-2 p-4 matte-card z-50 w-64 shadow-2xl border-orange-accent/20 animate-in fade-in zoom-in-95 duration-200">
               <div className="text-[10px] uppercase tracking-widest font-bold text-gray-500 mb-3">Colors</div>
@@ -206,14 +222,19 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
                 ].map(color => (
                   <button
                     key={color}
-                    onClick={() => { editor.chain().focus().setColor(color).run(); setShowColorPicker(false); }}
+                    onClick={() => { 
+                      applyToAllSelections(editor, (chain) => chain.setColor(color));
+                      setLastColor(color);
+                      localStorage.setItem('lastColor', color);
+                      setShowColorPicker(false); 
+                    }}
                     className="w-8 h-8 rounded-full border border-white/10 hover:scale-110 transition-transform shadow-inner"
                     style={{ backgroundColor: color }}
                   />
                 ))}
               </div>
               <button 
-                onClick={() => { editor.chain().focus().unsetColor().run(); setShowColorPicker(false); }}
+                onClick={() => { applyToAllSelections(editor, (chain) => chain.unsetColor()); setShowColorPicker(false); }}
                 className="w-full mt-4 text-[10px] uppercase tracking-widest font-black py-2 bg-white/5 hover:bg-white/10 rounded transition-colors text-gray-400"
               >
                 Reset Color
@@ -222,21 +243,32 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
           )}
         </div>
 
-        {/* Modern Styles Picker */}
-        <div className="relative">
+        {/* Modern Styles Split Button */}
+        <div className="relative flex flex-col items-center">
+          <button 
+            onClick={() => {
+              if (lastStyle) {
+                applyToAllSelections(editor, (chain) => chain.setMark('textStyle', { style: lastStyle }));
+              }
+            }}
+            className="p-1.5 hover:bg-white/10 rounded-t-md text-gray-400 transition-colors"
+            title={lastStyle ? "Apply last style" : "Select a style"}
+          >
+            <Type size={18} style={lastStyle ? parseStyleString(lastStyle) : {}} />
+          </button>
           <button 
             onClick={() => { setShowStylePicker(!showStylePicker); setShowColorPicker(false); setShowGroupPicker(false); setShowSizePicker(false); }}
-            className={`p-2 rounded-md hover:bg-white/10 transition-colors ${showStylePicker ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-400'}`}
-            title="Modern Styles"
+            className={`w-full flex justify-center py-0.5 rounded-b-md hover:bg-white/10 transition-colors ${showStylePicker ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-500'}`}
           >
-            <Type size={18} />
+            <ChevronDown size={10} />
           </button>
+
           {showStylePicker && (
             <div className="absolute top-full left-0 mt-2 w-72 matte-card z-50 shadow-2xl border-orange-accent/20 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
               <div className="p-3 bg-white/5 border-b border-white/5 flex items-center justify-between">
                 <span className="text-[10px] uppercase tracking-widest font-bold text-gray-400">50 Modern Styles</span>
                 <button 
-                  onClick={() => { editor.chain().focus().unsetMark('textStyle').run(); setShowStylePicker(false); }}
+                  onClick={() => { applyToAllSelections(editor, (chain) => chain.unsetMark('textStyle')); setShowStylePicker(false); }}
                   className="text-[9px] uppercase tracking-tighter font-bold text-orange-accent hover:underline"
                 >
                   Clear All
@@ -247,7 +279,9 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
                   <button
                     key={style.name}
                     onClick={() => { 
-                      editor.chain().focus().setMark('textStyle', { style: style.style }).run(); 
+                      applyToAllSelections(editor, (chain) => chain.setMark('textStyle', { style: style.style }));
+                      setLastStyle(style.style);
+                      localStorage.setItem('lastStyle', style.style);
                       setShowStylePicker(false); 
                     }}
                     className="w-full p-4 text-left hover:bg-white/5 border-b border-white/5 transition-all group flex items-center justify-between"
@@ -262,15 +296,24 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
           )}
         </div>
 
-        {/* Font Size Picker */}
-        <div className="relative">
+        {/* Font Size Split Button */}
+        <div className="relative flex flex-col items-center">
+          <button 
+            onClick={() => {
+              applyToAllSelections(editor, (chain) => chain.setMark('textStyle', { fontSize: lastSize }));
+            }}
+            className="p-1.5 hover:bg-white/10 rounded-t-md text-gray-400 transition-colors"
+            title={`Apply last size: ${lastSize}`}
+          >
+            <span className="text-[10px] font-bold">{lastSize.replace('px', '')}</span>
+          </button>
           <button 
             onClick={() => { setShowSizePicker(!showSizePicker); setShowStylePicker(false); setShowColorPicker(false); setShowGroupPicker(false); }}
-            className={`p-2 rounded-md hover:bg-white/10 transition-colors ${showSizePicker ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-400'}`}
-            title="Font Size"
+            className={`w-full flex justify-center py-0.5 rounded-b-md hover:bg-white/10 transition-colors ${showSizePicker ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-500'}`}
           >
-            <span className="text-xs font-bold">Size</span>
+            <ChevronDown size={10} />
           </button>
+
           {showSizePicker && (
             <div className="absolute top-full left-0 mt-2 w-32 matte-card z-50 shadow-2xl border-orange-accent/20 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
               <div className="p-2 text-[10px] uppercase tracking-widest font-bold text-gray-500 border-b border-white/5">
@@ -281,7 +324,9 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
                   <button
                     key={size}
                     onClick={() => { 
-                      editor.chain().focus().setMark('textStyle', { fontSize: size }).run(); 
+                      applyToAllSelections(editor, (chain) => chain.setMark('textStyle', { fontSize: size }));
+                      setLastSize(size);
+                      localStorage.setItem('lastSize', size);
                       setShowSizePicker(false); 
                     }}
                     className="w-full p-3 text-left hover:bg-white/5 text-sm text-gray-300"

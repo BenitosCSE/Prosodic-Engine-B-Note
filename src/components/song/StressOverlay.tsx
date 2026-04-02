@@ -10,7 +10,7 @@ const StressOverlay: React.FC<StressOverlayProps> = ({ metrics, text }) => {
   if (!metrics || !metrics.segments) return null;
 
   return (
-    <div className="absolute inset-0 p-4 text-lg leading-relaxed pointer-events-none select-none whitespace-pre-wrap break-words">
+    <div className="absolute inset-0 p-2 text-lg leading-tight pointer-events-none select-none whitespace-pre-wrap break-words">
       {metrics.segments.map((segment, sIdx) => (
         <span key={sIdx}>
           {segment.type === 'separator' ? (

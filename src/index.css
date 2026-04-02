@@ -95,6 +95,10 @@
   .ProseMirror code {
     @apply bg-black/50 px-1.5 py-0.5 rounded font-mono text-orange-accent text-sm;
   }
+
+  .multi-selection-highlight {
+    @apply bg-orange-accent/30 border-b-2 border-orange-accent;
+  }
 }
 
 .watermark {

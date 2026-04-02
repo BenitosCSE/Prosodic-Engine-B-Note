@@ -79,7 +79,7 @@ const SongRow: React.FC<SongRowProps> = ({
   }
 
   return (
-    <div className="group relative py-3 px-2 hover:bg-white/[0.02] transition-colors rounded-lg">
+    <div className="group relative py-1 px-2 hover:bg-white/[0.02] transition-colors rounded-lg">
       <div className="relative">
         {settings.showStressHighlight && <StressOverlay metrics={metrics} text={row.text} />}
         <textarea
@@ -88,13 +88,13 @@ const SongRow: React.FC<SongRowProps> = ({
           onChange={handleInput}
           placeholder="Рядок..."
           rows={1}
-          className={`w-full bg-transparent p-4 text-lg leading-relaxed outline-none resize-none overflow-hidden placeholder:text-gray-700 ${settings.showStressHighlight ? 'text-white/40 caret-orange-accent' : 'text-gray-200'}`}
+          className={`w-full bg-transparent p-2 text-lg leading-tight outline-none resize-none overflow-hidden placeholder:text-gray-700 ${settings.showStressHighlight ? 'text-white/40 caret-orange-accent' : 'text-gray-200'}`}
           spellCheck={false}
         />
       </div>
 
       {settings.showMetrics && metrics && (
-        <div className="px-4 pb-1">
+        <div className="px-2 pb-1">
           <MetricsRow metrics={metrics} bpm={settings.bpm} />
         </div>
       )}

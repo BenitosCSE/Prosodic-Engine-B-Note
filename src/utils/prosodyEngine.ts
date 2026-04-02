@@ -96,9 +96,9 @@ export function analyzeText(text: string, bpm: number, beats: number, dictionary
   // Об'єднуємо глобальний словник та користувацький
   const mergedDictionary: Record<string, number> = { ...globalDictionary, ...dictionary };
 
-  text.split(/([^a-zA-Zа-яА-ЯіїєґІЇЄҐ']+)/).forEach(part => {
+  text.split(/([^a-zA-Zа-яА-ЯіїєґІЇЄҐ\u0301']+)/).forEach(part => {
     if (!part) return;
-    if (!/[a-zA-Zа-яА-ЯіїєґІЇЄҐ]/.test(part)) {
+    if (!/[a-zA-Zа-яА-ЯіїєґІЇЄҐ\u0301]/.test(part)) {
       const segment: Segment = {
         type: 'separator',
         text: part,
@@ -116,16 +116,35 @@ export function analyzeText(text: string, bpm: number, beats: number, dictionary
     } else {
       const syllables: Syllable[] = [];
       const wordLower = part.toLowerCase();
-      let stressIndex = mergedDictionary[wordLower];
       
-      if (stressIndex === undefined) {
-        stressIndex = detectStress(part);
+      // 1. Check for manual Unicode stress \u0301
+      let stressIndex: number | undefined = undefined;
+      const vowelPositions: number[] = [];
+      
+      // We need to iterate through the word and find vowels AND check if they are followed by \u0301
+      let vowelCount = 0;
+      for (let i = 0; i < part.length; i++) {
+        const char = part[i].toLowerCase();
+        if (VOWELS.has(char)) {
+          vowelPositions.push(i);
+          if (part[i + 1] === '\u0301') {
+            stressIndex = vowelCount;
+          }
+          vowelCount++;
+        }
       }
 
-      const vowelPositions: number[] = [];
-      [...wordLower].forEach((char, i) => {
-        if (VOWELS.has(char)) vowelPositions.push(i);
-      });
+      // 2. If no manual stress, check dictionary
+      if (stressIndex === undefined) {
+        // Clean word from any existing stress marks for dictionary lookup
+        const cleanWord = wordLower.replace(/\u0301/g, '');
+        stressIndex = mergedDictionary[cleanWord];
+      }
+      
+      // 3. Fallback to heuristic
+      if (stressIndex === undefined) {
+        stressIndex = detectStress(part.replace(/\u0301/g, ''));
+      }
 
       if (vowelPositions.length === 0) {
         syllables.push({
@@ -221,4 +240,43 @@ export function formatMetrics(metrics: ProsodyMetrics) {
     bpmMax: `${Math.round(metrics.BPMmax)} BPM`,
     accuracy: `${Math.round(metrics.A * 100)}%`
   };
+}
+
+export function applyAccentsToText(text: string, dictionary: Record<string, number> = {}): string {
+  const metrics = analyzeText(text, 120, 4, dictionary);
+  let result = "";
+  
+  metrics.segments.forEach(segment => {
+    if (segment.type === 'separator') {
+      result += segment.text;
+    } else {
+      const word = segment.text;
+      const stressedSyllableIdx = segment.syllables.findIndex(s => s.stressed);
+      
+      if (stressedSyllableIdx !== -1) {
+        let currentVowelIdx = 0;
+        let wordResult = "";
+        for (let i = 0; i < word.length; i++) {
+          const char = word[i].toLowerCase();
+          if (VOWELS.has(char)) {
+            wordResult += word[i];
+            if (currentVowelIdx === stressedSyllableIdx) {
+              // Check if next char is already a stress mark
+              if (word[i+1] !== '\u0301') {
+                wordResult += '\u0301';
+              }
+            }
+            currentVowelIdx++;
+          } else if (word[i] !== '\u0301') {
+            wordResult += word[i];
+          }
+        }
+        result += wordResult;
+      } else {
+        result += word;
+      }
+    }
+  });
+  
+  return result;
 }

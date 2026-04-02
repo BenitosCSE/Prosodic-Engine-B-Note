@@ -54,7 +54,7 @@ export default function App() {
     }
   };
 
-  const handleSaveNote = async (noteData: Partial<Note>) => {
+  const handleSaveNote = async (noteData: Partial<Note>): Promise<number> => {
     const now = Date.now();
     const newNote: Note = {
       title: noteData.title || 'Untitled Note',
@@ -67,13 +67,22 @@ export default function App() {
       ...(noteData.id ? { id: noteData.id } : {}),
     };
 
-    await saveNote(newNote);
+    const id = await saveNote(newNote);
     await loadData();
+    
+    // Update editingNote with the new ID so subsequent saves use the same record
+    if (!noteData.id) {
+      setEditingNote({ ...newNote, id });
+    } else {
+      setEditingNote(newNote);
+    }
+
     // Don't automatically switch to list for song editor as it auto-saves
     if (currentView !== 'song-editor') {
       setCurrentView('list');
       setEditingNote(null);
     }
+    return id;
   };
 
   const handleDeleteNote = async (id: number) => {

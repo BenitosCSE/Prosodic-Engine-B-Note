@@ -2,16 +2,15 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ArrowLeft, Settings, Trash2, Download, Copy, Check } from 'lucide-react';
 import { Note } from '../../db';
 import { useSongSettings } from '../../hooks/useSongSettings';
-import { SongContent, Row, Block } from './types';
-import { VOWELS } from '../../utils/prosodyEngine';
+import { SongContent, Row } from './types';
+import { VOWELS, applyAccentsToText } from '../../utils/prosodyEngine';
 import SongSettingsPanel from './SongSettings';
 import SongToolbar from './SongToolbar';
-import SongBlock from './SongBlock';
 import SongRow from './SongRow';
 
 interface SongEditorProps {
   note: Note | null;
-  onSave: (noteData: Partial<Note>) => void;
+  onSave: (noteData: Partial<Note>) => Promise<number>;
   onClose: () => void;
   onDelete: (id: number) => void;
 }
@@ -20,10 +19,9 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, onSave, onClose, onDelete
   const { settings, updateBPM, updateBeats, toggleMetrics, toggleStress, updateDictionary } = useSongSettings();
   const [title, setTitle] = useState(note?.title || 'Untitled Song');
   const [rows, setRows] = useState<Row[]>([]);
-  const [blocks, setBlocks] = useState<Block[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSaved, setIsSaved] = useState(true);
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [currentId, setCurrentId] = useState<number | undefined>(note?.id);
 
   // Initialize data
   useEffect(() => {
@@ -31,30 +29,29 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, onSave, onClose, onDelete
       try {
         const content: SongContent = JSON.parse(note.content);
         setRows(content.rows || []);
-        setBlocks(content.blocks || []);
+        setCurrentId(note.id);
         if (content.dictionary) {
           updateDictionary({ ...settings.customDictionary, ...content.dictionary });
         }
       } catch (e) {
         console.error('Failed to parse song content', e);
-        setRows([{ id: '1', text: '', isSection: false, blockId: null }]);
+        setRows([{ id: '1', text: '', isSection: false }]);
       }
     } else {
-      setRows([{ id: '1', text: '', isSection: false, blockId: null }]);
+      setRows([{ id: '1', text: '', isSection: false }]);
+      setCurrentId(undefined);
     }
   }, [note]);
 
   const extractStressedWords = useCallback((rows: Row[]) => {
     const learned: Record<string, number> = {};
     rows.forEach(row => {
-      // Split by non-word characters but keep the stress mark \u0301
       const words = row.text.split(/[^a-zA-Zа-яА-ЯіїєґІЇЄҐ\u0301]+/);
       words.forEach(word => {
         if (word.includes('\u0301')) {
           const cleanWord = word.replace(/\u0301/g, '').toLowerCase();
           if (cleanWord.length < 2) return;
 
-          // Find vowel index
           const wordLower = word.toLowerCase();
           let vowelCount = 0;
           let stressIdx = -1;
@@ -78,58 +75,57 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, onSave, onClose, onDelete
     return learned;
   }, []);
 
-  const triggerSave = useCallback(() => {
-    setIsSaved(false);
-    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+  const performSave = useCallback(async () => {
+    const learnedDict = extractStressedWords(rows);
+    const finalDict = { ...settings.customDictionary, ...learnedDict };
     
-    saveTimeoutRef.current = setTimeout(() => {
-      const learnedDict = extractStressedWords(rows);
-      const finalDict = { ...settings.customDictionary, ...learnedDict };
-      
-      const content: SongContent = {
-        settings: { ...settings, customDictionary: finalDict },
-        blocks,
-        rows,
-        dictionary: finalDict
-      };
-      
-      onSave({
-        id: note?.id,
-        title,
-        content: JSON.stringify(content),
-        plainText: rows.map(r => r.text).join('\n'),
-        type: 'song',
-        createdAt: note?.createdAt,
-      });
-      setIsSaved(true);
-    }, 1000);
-  }, [note, title, rows, blocks, settings, onSave, extractStressedWords]);
+    const content: SongContent = {
+      settings: { ...settings, customDictionary: finalDict },
+      rows,
+      dictionary: finalDict
+    };
+    
+    const id = await onSave({
+      id: currentId,
+      title,
+      content: JSON.stringify(content),
+      plainText: rows.map(r => r.text).join('\n'),
+      type: 'song',
+      createdAt: note?.createdAt,
+    });
+    
+    if (!currentId) {
+      setCurrentId(id);
+    }
+    setIsSaved(true);
+  }, [note, title, rows, settings, onSave, extractStressedWords, currentId]);
+
+  const handleClose = async () => {
+    if (!isSaved) {
+      await performSave();
+    }
+    onClose();
+  };
 
   useEffect(() => {
+    // Mark as unsaved when content changes
     if (rows.length > 0 || title !== (note?.title || 'Untitled Song')) {
-      triggerSave();
+      setIsSaved(false);
+      
+      // Live extract dictionary so other words update immediately
+      const liveDict = extractStressedWords(rows);
+      updateDictionary({ ...settings.customDictionary, ...liveDict });
     }
-    return () => {
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    };
-  }, [rows, blocks, title, settings, triggerSave]);
+  }, [rows, title]);
 
   const handleAddRow = () => {
-    const newRow: Row = { id: Date.now().toString(), text: '', isSection: false, blockId: null };
+    const newRow: Row = { id: Date.now().toString(), text: '', isSection: false };
     setRows([...rows, newRow]);
   };
 
   const handleAddSection = () => {
-    const newRow: Row = { id: Date.now().toString(), text: '[SECTION]', isSection: true, blockId: null };
+    const newRow: Row = { id: Date.now().toString(), text: '[SECTION]', isSection: true };
     setRows([...rows, newRow]);
-  };
-
-  const handleAddBlock = () => {
-    const label = prompt('Enter block label (e.g. Verse 1):');
-    if (label) {
-      const newBlock: Block = { id: Date.now().toString(), label, order: blocks.length };
-      setBlocks([...blocks, newBlock]);
-    }
   };
 
   const handleUpdateRow = (id: string, text: string) => {
@@ -166,15 +162,16 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, onSave, onClose, onDelete
     setRows(rows.map(r => r.id === id ? { ...r, isSection: !r.isSection, text: r.isSection ? r.text.replace(/[\[\]]/g, '') : `[${r.text || 'SECTION'}]` } : r));
   };
 
-  const handleUpdateBlockLabel = (id: string, label: string) => {
-    setBlocks(blocks.map(b => b.id === id ? { ...b, label } : b));
-  };
-
-  const handleDeleteBlock = (id: string) => {
-    if (confirm('Delete block? Rows will be kept but unassigned.')) {
-      setBlocks(blocks.filter(b => b.id !== id));
-      setRows(rows.map(r => r.blockId === id ? { ...r, blockId: null } : r));
-    }
+  const handleBakeAccents = () => {
+    const newRows = rows.map(row => {
+      if (row.isSection) return row;
+      return {
+        ...row,
+        text: applyAccentsToText(row.text, settings.customDictionary)
+      };
+    });
+    setRows(newRows);
+    setIsSaved(false);
   };
 
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -186,24 +183,39 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, onSave, onClose, onDelete
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-matte-gray/50 backdrop-blur-xl z-20">
         <div className="flex items-center gap-4 flex-grow">
-          <button onClick={onClose} className="p-2 -ml-2 text-gray-400 hover:text-white transition-colors">
+          <button onClick={handleClose} className="p-2 -ml-2 text-gray-400 hover:text-white transition-colors">
             <ArrowLeft size={24} />
           </button>
           <input 
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             className="bg-transparent text-xl font-bold focus:outline-none w-full orange-text-gradient"
-            placeholder="Song Title..."
+            placeholder="Назва пісні..."
           />
         </div>
         
-        <div className="flex items-center gap-2">
-          <div className="text-[10px] uppercase tracking-widest font-black text-gray-600 mr-2">
-            {isSaved ? <span className="flex items-center gap-1 text-emerald-500/60"><Check size={12} /> Saved</span> : <span className="animate-pulse">Saving...</span>}
-          </div>
+        <div className="flex items-center gap-3">
+          {/* Static Unsaved Indicator */}
+          {!isSaved && (
+            <div className="w-2 h-2 rounded-full bg-orange-accent shadow-[0_0_10px_rgba(255,107,0,0.5)]" title="Є незбережені зміни" />
+          )}
+          
+          <button 
+            onClick={performSave}
+            className={`p-2 rounded-full transition-all ${
+              isSaved 
+                ? 'text-gray-600 cursor-default' 
+                : 'text-orange-accent hover:bg-orange-accent/10 active:scale-90'
+            }`}
+            disabled={isSaved}
+            title="Зберегти"
+          >
+            <Download size={22} />
+          </button>
+
           <button 
             onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-            className={`p-2 rounded-lg transition-all ${isSettingsOpen ? 'bg-orange-accent text-black' : 'text-gray-400 hover:bg-white/5'}`}
+            className={`p-2 rounded-full transition-all ${isSettingsOpen ? 'bg-orange-accent text-black' : 'text-gray-400 hover:bg-white/5'}`}
           >
             <Settings size={20} />
           </button>
@@ -230,27 +242,9 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, onSave, onClose, onDelete
       )}
 
       {/* Content */}
-      <div className="flex-grow overflow-y-auto p-6 space-y-2 no-scrollbar" onPaste={handlePaste}>
-        {/* Render Blocks */}
-        {blocks.sort((a, b) => a.order - b.order).map(block => (
-          <SongBlock 
-            key={block.id}
-            block={block}
-            rows={rows.filter(r => r.blockId === block.id)}
-            settings={settings}
-            onUpdateRow={handleUpdateRow}
-            onDeleteRow={handleDeleteRow}
-            onDuplicateRow={handleDuplicateRow}
-            onMoveRow={handleMoveRow}
-            onConvertToSection={handleConvertToSection}
-            onUpdateBlockLabel={handleUpdateBlockLabel}
-            onDeleteBlock={handleDeleteBlock}
-          />
-        ))}
-
-        {/* Render Unassigned Rows */}
-        <div className="space-y-1">
-          {rows.filter(r => !r.blockId).map(row => (
+      <div className="flex-grow overflow-y-auto p-2 sm:p-6 space-y-1 no-scrollbar" onPaste={handlePaste}>
+        <div className="max-w-[800px] mx-auto space-y-1">
+          {rows.map(row => (
             <SongRow 
               key={row.id}
               row={row}
@@ -278,7 +272,7 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, onSave, onClose, onDelete
         <SongToolbar 
           onAddRow={handleAddRow}
           onAddSection={handleAddSection}
-          onAddBlock={handleAddBlock}
+          onBakeAccents={handleBakeAccents}
         />
       </div>
     </div>
