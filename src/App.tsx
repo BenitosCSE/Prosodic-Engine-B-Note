@@ -160,6 +160,9 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-grow overflow-hidden relative z-10">
         {renderContent()}
+        
+        {/* Music Player inside relative container */}
+        <MusicPlayer />
       </main>
 
       {/* Bottom Navigation */}
@@ -194,9 +197,6 @@ export default function App() {
           <div className="w-12 h-12 border-4 border-orange-accent/20 border-t-orange-accent rounded-full animate-spin" />
         </div>
       )}
-
-      {/* Music Player */}
-      <MusicPlayer />
     </div>
   );
 }

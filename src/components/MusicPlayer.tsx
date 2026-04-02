@@ -10,8 +10,27 @@ interface Track {
 const MusicPlayer: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [apiKey, setApiKey] = useState(localStorage.getItem('gdrive_api_key') || '');
-  const [folderId, setFolderId] = useState(localStorage.getItem('gdrive_folder_id') || '1hCgDh2IJmVhrd3JUER7JfB5NmQX6F6pD');
+  const DEFAULT_API_KEY = 'AIzaSyBddDf9m1Bvzg5V_H3TYn6whHRpi3TxLjA';
+  const DEFAULT_FOLDER_ID = '1hCgDh2IJmVhrd3JUER7JfB5NmQX6F6pD';
+
+  const [apiKey, setApiKey] = useState(() => {
+    const saved = localStorage.getItem('gdrive_api_key');
+    if (saved === '.' || !saved || saved.length < 10) {
+      localStorage.removeItem('gdrive_api_key');
+      return DEFAULT_API_KEY;
+    }
+    return saved;
+  });
+  
+  const [folderId, setFolderId] = useState(() => {
+    const saved = localStorage.getItem('gdrive_folder_id');
+    if (saved === '.' || !saved || saved.length < 10) {
+      localStorage.removeItem('gdrive_folder_id');
+      return DEFAULT_FOLDER_ID;
+    }
+    return saved;
+  });
+
   const [tracks, setTracks] = useState<Track[]>([]);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -27,7 +46,7 @@ const MusicPlayer: React.FC = () => {
     if (apiKey && folderId) {
       fetchTracks();
     }
-  }, []);
+  }, [apiKey, folderId]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -35,31 +54,36 @@ const MusicPlayer: React.FC = () => {
     }
   }, [volume]);
 
+  const [debugLog, setDebugLog] = useState<string | null>(null);
+
   const fetchTracks = async () => {
-    if (!apiKey || !folderId) {
-      setError('Please set API Key and Folder ID in settings');
-      return;
-    }
+    // FORCE USE THE PROVIDED CREDENTIALS
+    const activeKey = 'AIzaSyBddDf9m1Bvzg5V_H3TYn6whHRpi3TxLjA';
+    const activeFolder = '1hCgDh2IJmVhrd3JUER7JfB5NmQX6F6pD';
 
     setIsLoading(true);
     setError(null);
+    setDebugLog(null);
     try {
-      const q = encodeURIComponent(`'${folderId}' in parents and (mimeType contains 'audio/' or name contains '.mp3')`);
-      const response = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${q}&key=${apiKey}&fields=files(id,name)&pageSize=100`
-      );
+      const q = encodeURIComponent(`'${activeFolder}' in parents and (mimeType contains 'audio/' or name contains '.mp3')`);
+      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&key=${activeKey}&fields=files(id,name)&pageSize=100`;
+      
+      const response = await fetch(url);
+      const data = await response.json();
 
       if (!response.ok) {
-        throw new Error('Failed to fetch tracks. Check your API Key and Folder ID.');
+        const message = data.error?.message || 'Failed to fetch tracks';
+        setDebugLog(JSON.stringify(data, null, 2));
+        throw new Error(`Google API Error: ${message}`);
       }
 
-      const data = await response.json();
       setTracks(data.files || []);
       if (data.files?.length > 0 && currentTrackIndex === -1) {
         setCurrentTrackIndex(0);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
+      console.error('B-PLAYER ERROR:', err);
     } finally {
       setIsLoading(false);
     }
@@ -77,11 +101,12 @@ const MusicPlayer: React.FC = () => {
   };
 
   const playTrack = (index: number) => {
+    const activeKey = 'AIzaSyBddDf9m1Bvzg5V_H3TYn6whHRpi3TxLjA';
     setCurrentTrackIndex(index);
     setIsPlaying(true);
-    // Audio source will update via useEffect or direct ref update
+    
     if (audioRef.current) {
-      audioRef.current.src = `https://www.googleapis.com/drive/v3/files/${tracks[index].id}?alt=media&key=${apiKey}`;
+      audioRef.current.src = `https://www.googleapis.com/drive/v3/files/${tracks[index].id}?alt=media&key=${activeKey}`;
       audioRef.current.play().catch(e => setError('Playback failed: ' + e.message));
     }
   };
@@ -128,127 +153,73 @@ const MusicPlayer: React.FC = () => {
   const currentTrack = tracks[currentTrackIndex];
 
   return (
-    <div className="fixed bottom-24 right-6 z-50 flex flex-col items-end gap-4">
+    <div className="fixed bottom-[88px] left-1/2 -translate-x-1/2 w-full max-w-[860px] z-40 px-4 pointer-events-none">
       <audio 
         ref={audioRef} 
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={nextTrack}
+        crossOrigin="anonymous"
       />
 
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.95 }}
-            className="w-80 matte-card p-4 shadow-2xl border-orange-accent/20 overflow-hidden"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Music size={18} className="text-orange-accent" />
-                <span className="text-xs font-black uppercase tracking-widest text-gray-400">B-PLAYER</span>
-              </div>
-              <div className="flex gap-2">
+      <div className="pointer-events-auto">
+        <AnimatePresence>
+          {isOpen && (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className="matte-card p-4 shadow-2xl border-orange-accent/20 mb-2 overflow-hidden"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Music size={16} className="text-orange-accent" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Playlist</span>
+                </div>
                 <button onClick={() => setShowSettings(!showSettings)} className="p-1 text-gray-500 hover:text-white transition-colors">
-                  <Settings size={16} />
-                </button>
-                <button onClick={() => setIsOpen(false)} className="p-1 text-gray-500 hover:text-white transition-colors">
-                  <X size={16} />
+                  <Settings size={14} />
                 </button>
               </div>
-            </div>
 
-            {showSettings ? (
-              <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500 block mb-1">Google API Key</label>
+              {error && (
+                <div className="p-2 bg-red-500/10 border border-red-500/20 rounded text-[9px] text-red-400 mb-3">
+                  {error}
+                </div>
+              )}
+
+              {showSettings ? (
+                <div className="space-y-3">
                   <input 
                     type="password" 
                     value={apiKey} 
                     onChange={(e) => setApiKey(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded p-2 text-xs text-white focus:border-orange-accent outline-none"
-                    placeholder="Enter API Key..."
+                    className="w-full bg-white/5 border border-white/10 rounded p-2 text-[10px] text-white outline-none focus:border-orange-accent"
+                    placeholder="API Key..."
                   />
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase tracking-widest font-bold text-gray-500 block mb-1">Folder ID</label>
                   <input 
                     type="text" 
                     value={folderId} 
                     onChange={(e) => setFolderId(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded p-2 text-xs text-white focus:border-orange-accent outline-none"
-                    placeholder="Enter GDrive Folder ID..."
+                    className="w-full bg-white/5 border border-white/10 rounded p-2 text-[10px] text-white outline-none focus:border-orange-accent"
+                    placeholder="Folder ID..."
                   />
-                </div>
-                <button 
-                  onClick={saveSettings}
-                  className="w-full py-2 bg-orange-accent text-black text-[10px] font-black uppercase tracking-widest rounded hover:bg-orange-accent/90 transition-colors"
-                >
-                  Save & Sync
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {error && (
-                  <div className="p-2 bg-red-500/10 border border-red-500/20 rounded text-[10px] text-red-400">
-                    {error}
-                  </div>
-                )}
-
-                <div className="text-center py-2">
-                  <div className="text-sm font-bold text-gray-200 truncate px-2">
-                    {currentTrack ? currentTrack.name.replace(/\.[^/.]+$/, "") : "No track selected"}
-                  </div>
-                  <div className="text-[10px] text-gray-500 uppercase tracking-widest mt-1">
-                    {isPlaying ? "Now Playing" : "Paused"}
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => {
+                        setApiKey(DEFAULT_API_KEY);
+                        setFolderId(DEFAULT_FOLDER_ID);
+                        localStorage.removeItem('gdrive_api_key');
+                        localStorage.removeItem('gdrive_folder_id');
+                      }} 
+                      className="flex-grow py-2 bg-white/5 text-gray-400 text-[10px] font-black uppercase rounded hover:text-white"
+                    >
+                      Reset
+                    </button>
+                    <button onClick={saveSettings} className="flex-[2] py-2 bg-orange-accent text-black text-[10px] font-black uppercase rounded">Save</button>
                   </div>
                 </div>
-
-                <div className="space-y-1">
-                  <input 
-                    type="range" 
-                    min="0" 
-                    max="100" 
-                    value={progress} 
-                    onChange={handleSeek}
-                    className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-orange-accent"
-                  />
-                  <div className="flex justify-between text-[8px] font-mono text-gray-600">
-                    <span>{audioRef.current ? formatTime(audioRef.current.currentTime) : "0:00"}</span>
-                    <span>{formatTime(duration)}</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-center gap-6">
-                  <button onClick={prevTrack} className="text-gray-400 hover:text-white transition-colors">
-                    <SkipBack size={20} />
-                  </button>
-                  <button 
-                    onClick={togglePlay}
-                    className="w-12 h-12 rounded-full bg-orange-accent flex items-center justify-center text-black hover:scale-105 active:scale-95 transition-all shadow-lg shadow-orange-accent/20"
-                  >
-                    {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-1" />}
-                  </button>
-                  <button onClick={nextTrack} className="text-gray-400 hover:text-white transition-colors">
-                    <SkipForward size={20} />
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-3 pt-2 border-t border-white/5">
-                  <Volume2 size={14} className="text-gray-500" />
-                  <input 
-                    type="range" 
-                    min="0" 
-                    max="1" 
-                    step="0.01"
-                    value={volume} 
-                    onChange={(e) => setVolume(parseFloat(e.target.value))}
-                    className="flex-grow h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-gray-400"
-                  />
-                </div>
-
-                <div className="max-h-32 overflow-y-auto custom-scrollbar pt-2 space-y-1">
+              ) : (
+                <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-1">
                   {tracks.map((track, idx) => (
                     <button
                       key={track.id}
@@ -258,29 +229,44 @@ const MusicPlayer: React.FC = () => {
                       {track.name}
                     </button>
                   ))}
-                  {tracks.length === 0 && !isLoading && (
-                    <div className="text-center py-4 text-[10px] text-gray-600 italic">
-                      No tracks found in folder
-                    </div>
-                  )}
-                  {isLoading && (
-                    <div className="flex justify-center py-4">
-                      <RefreshCw size={16} className="text-orange-accent animate-spin" />
-                    </div>
-                  )}
                 </div>
-              </div>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-      <button 
-        onClick={() => setIsOpen(!isOpen)}
-        className={`w-14 h-14 rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-110 active:scale-90 ${isOpen ? 'bg-orange-accent text-black' : 'bg-matte-gray/90 text-orange-accent border border-white/10 backdrop-blur-xl'}`}
-      >
-        <Music size={24} className={isPlaying ? 'animate-pulse' : ''} />
-      </button>
+        <div className="matte-card p-3 flex items-center gap-4 shadow-xl border-white/10">
+          <button 
+            onClick={() => setIsOpen(!isOpen)}
+            className={`p-2 rounded-md transition-colors ${isOpen ? 'text-orange-accent bg-orange-accent/10' : 'text-gray-400 hover:bg-white/5'}`}
+          >
+            <ListMusic size={20} />
+          </button>
+
+          <div className="flex-grow min-w-0">
+            <div className="text-[10px] font-bold text-gray-200 truncate">
+              {currentTrack ? currentTrack.name.replace(/\.[^/.]+$/, "") : "B-PLAYER READY"}
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <div className="flex-grow h-1 bg-white/5 rounded-full overflow-hidden">
+                <div className="h-full bg-orange-accent transition-all duration-300" style={{ width: `${progress}%` }} />
+              </div>
+              <span className="text-[8px] font-mono text-gray-600 w-8">{audioRef.current ? formatTime(audioRef.current.currentTime) : "0:00"}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button onClick={prevTrack} className="p-1 text-gray-500 hover:text-white"><SkipBack size={18} /></button>
+            <button 
+              onClick={togglePlay}
+              className="w-10 h-10 rounded-full bg-orange-accent flex items-center justify-center text-black hover:scale-105 active:scale-95 transition-all"
+            >
+              {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
+            </button>
+            <button onClick={nextTrack} className="p-1 text-gray-500 hover:text-white"><SkipForward size={18} /></button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };
