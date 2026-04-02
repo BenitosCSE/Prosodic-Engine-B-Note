@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { Note, Group } from '../db';
 import { MODERN_STYLES } from '../constants/editorStyles';
-import { MultiSelectionPlugin, applyToAllSelections } from '../lib/multiSelectionPlugin';
+import { MultiSelectionExtension, applyToAllSelections } from '../lib/multiSelectionPlugin';
 
 // Helper to parse CSS string to React style object
 const parseStyleString = (styleString: string): React.CSSProperties => {
@@ -96,7 +96,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ note, groups, onSave, onClose, 
       Placeholder.configure({
         placeholder: 'Write your ideas here...',
       }),
-      MultiSelectionPlugin(),
+      MultiSelectionExtension,
     ],
     content: note?.content || '',
     editorProps: {
