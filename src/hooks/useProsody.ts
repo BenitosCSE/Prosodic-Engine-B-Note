@@ -1,33 +1,23 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { analyzeText, ProsodyMetrics } from '../utils/prosodyEngine';
+import { SongSettings } from './useSongSettings';
 
-export interface SongSettings {
-  bpm: number;
-  beats: number;
-  showMetrics: boolean;
-  showStressHighlight: boolean;
-  customDictionary: Record<string, number>;
-}
+export type { SongSettings };
 
 export function useProsody(text: string, settings: SongSettings) {
-  const [metrics, setMetrics] = useState<ProsodyMetrics | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-
-  useEffect(() => {
+  const metrics = useMemo<ProsodyMetrics | null>(() => {
     if (!text.trim()) {
-      setMetrics(null);
-      return;
+      return null;
     }
+    return analyzeText(
+      text,
+      settings.bpm,
+      settings.beats,
+      settings.customDictionary,
+      settings.subdivisions ?? 4
+    );
+  }, [text, settings.bpm, settings.beats, settings.customDictionary, settings.subdivisions]);
 
-    setIsAnalyzing(true);
-    const timer = setTimeout(() => {
-      const result = analyzeText(text, settings.bpm, settings.beats, settings.customDictionary);
-      setMetrics(result);
-      setIsAnalyzing(false);
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [text, settings.bpm, settings.beats, settings.customDictionary]);
-
-  return { metrics, isAnalyzing };
+  return { metrics, isAnalyzing: false };
 }
+

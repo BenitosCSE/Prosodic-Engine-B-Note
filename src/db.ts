@@ -89,3 +89,42 @@ export async function deleteGroup(id: number): Promise<void> {
   // Optional: move notes to "No Group" or delete them
   await db.delete(GROUP_STORE, id);
 }
+
+export async function importDatabase(data: { notes?: Note[]; groups?: Group[] }): Promise<{ importedNotes: number; importedGroups: number }> {
+  const db = await initDB();
+  let importedGroups = 0;
+  let importedNotes = 0;
+
+  if (Array.isArray(data.groups)) {
+    const txGroups = db.transaction(GROUP_STORE, 'readwrite');
+    for (const group of data.groups) {
+      if (group && typeof group.name === 'string') {
+        await txGroups.store.put({
+          ...group,
+          createdAt: group.createdAt || Date.now(),
+        });
+        importedGroups++;
+      }
+    }
+    await txGroups.done;
+  }
+
+  if (Array.isArray(data.notes)) {
+    const txNotes = db.transaction(STORE_NAME, 'readwrite');
+    for (const note of data.notes) {
+      if (note && typeof note.title === 'string') {
+        await txNotes.store.put({
+          ...note,
+          type: note.type || 'note',
+          createdAt: note.createdAt || Date.now(),
+          updatedAt: note.updatedAt || Date.now(),
+        });
+        importedNotes++;
+      }
+    }
+    await txNotes.done;
+  }
+
+  return { importedNotes, importedGroups };
+}
+

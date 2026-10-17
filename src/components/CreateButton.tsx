@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Pencil, FileText, Music, Plus, X } from 'lucide-react';
+import { Pencil, FileText, Music, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface CreateButtonProps {
@@ -35,44 +35,49 @@ const CreateButton: React.FC<CreateButtonProps> = ({ onCreateNote, onCreateSong 
           <>
             {/* Note Option */}
             <motion.button
-              initial={{ opacity: 0, y: 0, x: 0 }}
-              animate={{ opacity: 1, y: -80, x: -50 }}
-              exit={{ opacity: 0, y: 0, x: 0 }}
+              initial={{ opacity: 0, y: 12, x: 0, scale: 0.75 }}
+              animate={{ opacity: 1, y: -88, x: -64, scale: 1 }}
+              exit={{ opacity: 0, y: 10, x: 0, scale: 0.75 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 24 }}
               onClick={() => { onCreateNote(); setIsOpen(false); }}
-              className="absolute left-1/2 -translate-x-1/2 p-4 bg-matte-gray border border-white/10 rounded-full text-gray-300 shadow-2xl hover:text-orange-accent hover:border-orange-accent/50 transition-colors flex flex-col items-center gap-1"
+              className="absolute left-1/2 -translate-x-1/2 w-20 h-20 matte-card rounded-2xl text-gray-200 hover:text-orange-accent hover:border-orange-accent/50 transition-colors flex flex-col items-center justify-center gap-1.5 shadow-[0_15px_35px_rgba(0,0,0,0.85)] cursor-pointer"
             >
-              <FileText size={24} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Note</span>
+              <FileText size={22} className="text-orange-accent" />
+              <span className="text-[9px] font-black uppercase tracking-widest">Нотатка</span>
             </motion.button>
 
             {/* Song Option */}
             <motion.button
-              initial={{ opacity: 0, y: 0, x: 0 }}
-              animate={{ opacity: 1, y: -80, x: 50 }}
-              exit={{ opacity: 0, y: 0, x: 0 }}
+              initial={{ opacity: 0, y: 12, x: 0, scale: 0.75 }}
+              animate={{ opacity: 1, y: -88, x: 64, scale: 1 }}
+              exit={{ opacity: 0, y: 10, x: 0, scale: 0.75 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 24, delay: 0.03 }}
               onClick={() => { onCreateSong(); setIsOpen(false); }}
-              className="absolute left-1/2 -translate-x-1/2 p-4 bg-matte-gray border border-white/10 rounded-full text-gray-300 shadow-2xl hover:text-orange-accent hover:border-orange-accent/50 transition-colors flex flex-col items-center gap-1"
+              className="absolute left-1/2 -translate-x-1/2 w-20 h-20 matte-card rounded-2xl text-gray-200 hover:text-orange-accent hover:border-orange-accent/50 transition-colors flex flex-col items-center justify-center gap-1.5 shadow-[0_15px_35px_rgba(0,0,0,0.85)] cursor-pointer"
             >
-              <Music size={24} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Song</span>
+              <Music size={22} className="text-orange-accent" />
+              <span className="text-[9px] font-black uppercase tracking-widest">Пісня</span>
             </motion.button>
           </>
         )}
       </AnimatePresence>
 
-      <button 
+      <motion.button 
+        whileHover={{ scale: 1.07 }}
+        whileTap={{ scale: 0.93 }}
         onClick={handleToggle}
-        className={`p-4 bg-orange-accent rounded-full text-black shadow-[0_0_20px_rgba(255,107,0,0.3)] transition-all hover:scale-110 active:scale-95 -translate-y-4 z-50 relative`}
+        className="w-14 h-14 flex items-center justify-center rounded-2xl text-black shadow-[0_0_28px_rgba(255,107,0,0.45),inset_0_1px_0_rgba(255,255,255,0.45)] bg-gradient-to-br from-[#ffa233] via-[#ff6b00] to-[#e05500] z-50 relative cursor-pointer"
       >
         <motion.div
-          animate={{ rotate: isOpen ? 45 : 0 }}
-          transition={{ duration: 0.2 }}
+          animate={{ rotate: isOpen ? 135 : 0 }}
+          transition={{ type: 'spring', stiffness: 360, damping: 22 }}
         >
-          {isOpen ? <Plus size={32} strokeWidth={2.5} /> : <Pencil size={32} strokeWidth={2.5} />}
+          {isOpen ? <Plus size={28} strokeWidth={2.5} /> : <Pencil size={24} strokeWidth={2.5} />}
         </motion.div>
-      </button>
+      </motion.button>
     </div>
   );
 };
 
 export default CreateButton;
+
