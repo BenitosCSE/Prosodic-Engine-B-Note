@@ -1,4 +1,55 @@
 import globalDictionary from './dictionary.json';
+import { ExtendedStressDB, getCachedStressDB, saveCachedStressDB } from '../db';
+
+let extendedStressDB: ExtendedStressDB | null = null;
+let loadingPromise: Promise<ExtendedStressDB | null> | null = null;
+
+const ENDINGS_SET = new Set([
+  "уватися", "юватися", "увалися", "ювалися", "уватиме", "юватиме",
+  "ований", "ованого", "ованому", "ованим", "ованім", "ована", "ованої", "ованій", "овану", "ованою", "оване", "овані", "ованих", "ованими",
+  "ений", "еного", "еному", "еним", "енім", "ена", "еної", "еній", "ену", "еною", "ене", "ені", "ених", "еними",
+  "ський", "ського", "ському", "ським", "ськім", "ська", "ської", "ській", "ську", "ською", "ське", "ські", "ських", "ськими",
+  "цький", "цького", "цькому", "цьким", "цькім", "цька", "цької", "цькій", "цьку", "цькою", "цьке", "цькі", "цьких", "цькими",
+  "зький", "зького", "зькому", "зьким", "зькім", "зька", "зької", "зькій", "зьку", "зькою", "зьке", "зькі", "зьких", "зькими",
+  "ність", "ності", "ністю", "ностей", "ностям", "ностями", "ностях",
+  "ування", "ювання", "уванням", "юванням", "уваннях", "юваннях",
+  "ання", "яння", "анню", "янню", "анням", "янням", "аннями", "яннями",
+  "ення", "єння", "енню", "єнню", "енням", "єнням", "еннями", "єннями",
+  "итися", "ітися", "атися", "ятися", "утися", "ютися", "еться", "ється", "яться", "уться", "ються", "имось",
+  "ами", "ями", "ові", "еві", "єві", "ими", "їми", "ого", "ього", "ому", "ьому",
+  "емо", "ємо", "ете", "єте", "уть", "ють", "ать", "ять", "имо", "їмо", "ите", "їте",
+  "ою", "єю", "их", "їх", "им", "їм", "ий", "ій", "ая", "яя", "еє", "єє", "ії",
+  "ів", "їв", "ах", "ях", "ом", "ем", "єм", "ам", "ям", "ши", "вши", "чи",
+  "ти", "ть", "ла", "ло", "ли", "иш", "їш", "ся", "сь",
+  "а", "я", "о", "е", "є", "и", "і", "ї", "у", "ю", "в"
+]);
+
+export async function ensureExtendedStressDB(): Promise<ExtendedStressDB | null> {
+  if (extendedStressDB) return extendedStressDB;
+  if (loadingPromise) return loadingPromise;
+
+  loadingPromise = (async () => {
+    try {
+      const cached = await getCachedStressDB();
+      if (cached && cached.version === 2) {
+        extendedStressDB = cached;
+        return cached;
+      }
+      const response = await fetch('/stress-db.json');
+      if (response.ok) {
+        const data: ExtendedStressDB = await response.json();
+        extendedStressDB = data;
+        await saveCachedStressDB(data);
+        return data;
+      }
+    } catch (e) {
+      console.warn('Extended stress DB fallback to bootstrap dictionary:', e);
+    }
+    return null;
+  })();
+
+  return loadingPromise;
+}
 
 export const VOWELS = new Set(["а", "е", "є", "и", "і", "ї", "о", "у", "ю", "я", "a", "e", "i", "o", "u", "y"]);
 export const CONSONANTS = new Set(["б", "в", "г", "ґ", "д", "ж", "з", "й", "к", "л", "м", "н", "п", "р", "с", "т", "ф", "х", "ц", "ч", "ш", "щ", "b", "c", "d", "f", "g", "h", "j", "k", "l", "m", "n", "p", "q", "r", "s", "t", "v", "w", "x", "z"]);
@@ -31,6 +82,7 @@ export interface Syllable {
   isAnacrusis?: boolean;     // Pickup syllable before first strong beat
   beatIndex?: number;
   subdivisionIndex?: number;
+  candidateLineStressIndices?: number[];
 }
 
 export interface Segment {
@@ -216,6 +268,84 @@ export function evaluateSyllableClosure(sylLower: string): {
 
 export function isSyllableClosed(sylLower: string): boolean {
   return evaluateSyllableClosure(sylLower).closed;
+}
+
+export function stripUkrainianEnding(word: string): string {
+  const n = word.length;
+  const maxK = Math.min(7, n - 3);
+  for (let k = maxK; k >= 1; k--) {
+    if (ENDINGS_SET.has(word.slice(n - k))) {
+      const stem = word.slice(0, n - k);
+      for (let i = 0; i < stem.length; i++) {
+        if (VOWELS.has(stem[i])) {
+          return stem;
+        }
+      }
+    }
+  }
+  return word;
+}
+
+/**
+ * Multi-tier Ukrainian stress lookup backed by NASU 2.93M wordform database + morphological rules.
+ */
+export function lookupWordStress(
+  cleanWord: string,
+  totalVowels: number,
+  customDictionary: Record<string, number> = {}
+): { primary: number; candidates?: number[] } {
+  if (totalVowels <= 1) return { primary: 0 };
+
+  // 1. User custom dictionary (highest priority after manual \u0301)
+  if (customDictionary[cleanWord] !== undefined) {
+    const idx = Math.max(0, Math.min(totalVowels - 1, customDictionary[cleanWord]));
+    return { primary: idx };
+  }
+
+  // 2. Extended NASU database (if loaded in memory)
+  if (extendedStressDB) {
+    const multi = extendedStressDB.multi[cleanWord];
+    if (multi && multi.length > 0) {
+      const valid = multi.filter(i => i >= 0 && i < totalVowels);
+      if (valid.length > 0) {
+        return { primary: valid[0], candidates: valid.length > 1 ? valid : undefined };
+      }
+    }
+
+    const exact = extendedStressDB.exact[cleanWord];
+    if (exact !== undefined) {
+      return { primary: Math.max(0, Math.min(totalVowels - 1, exact)) };
+    }
+
+    const stem = stripUkrainianEnding(cleanWord);
+    const stemStress = extendedStressDB.stems[stem];
+    if (stemStress !== undefined) {
+      return { primary: Math.max(0, Math.min(totalVowels - 1, stemStress)) };
+    }
+
+    const nvCap = Math.min(totalVowels, 7);
+    if (cleanWord.length >= 4) {
+      const s4Hit = extendedStressDB.s4[`${nvCap}:${cleanWord.slice(-4)}`];
+      if (s4Hit !== undefined && s4Hit < totalVowels) {
+        return { primary: s4Hit };
+      }
+    }
+    if (cleanWord.length >= 3) {
+      const s3Hit = extendedStressDB.s3[`${nvCap}:${cleanWord.slice(-3)}`];
+      if (s3Hit !== undefined && s3Hit < totalVowels) {
+        return { primary: s3Hit };
+      }
+    }
+  }
+
+  // 3. Synchronous bootstrap dictionary (9,169 high-frequency short words)
+  if ((globalDictionary as Record<string, number>)[cleanWord] !== undefined) {
+    const idx = (globalDictionary as Record<string, number>)[cleanWord];
+    return { primary: Math.max(0, Math.min(totalVowels - 1, idx)) };
+  }
+
+  // 4. Morphological fallback
+  return { primary: detectStress(cleanWord) };
 }
 
 /**
@@ -436,19 +566,13 @@ export function analyzeText(
       });
 
       const cleanWord = part.toLowerCase().replace(/\u0301/g, '').replace(/[’ʼ‘`]/g, "'");
+      let wordCandidateStresses: number[] | undefined = undefined;
 
-      // 2. Dictionary lookup (user custom dictionary first, then globalDictionary)
-      if (stressIndex === undefined) {
-        if (dictionary[cleanWord] !== undefined) {
-          stressIndex = dictionary[cleanWord];
-        } else if ((globalDictionary as Record<string, number>)[cleanWord] !== undefined) {
-          stressIndex = (globalDictionary as Record<string, number>)[cleanWord];
-        }
-      }
-
-      // 3. Heuristic fallback
+      // 2. Multi-tier Dictionary & Stem/Suffix lookup (if no manual \u0301 in text)
       if (stressIndex === undefined && vowelGraphemeIndices.length > 0) {
-        stressIndex = detectStress(cleanWord);
+        const lookup = lookupWordStress(cleanWord, vowelGraphemeIndices.length, dictionary);
+        stressIndex = lookup.primary;
+        wordCandidateStresses = lookup.candidates;
       }
 
       // Clamp stressIndex if out of bounds
@@ -582,6 +706,11 @@ export function analyzeText(
           !closure.closed &&
           !closure.glideClosed;
         const isStressed = !isClitic && stressIndex === vIdx;
+        const wordBaseLineIdx = allSyllables.length - vIdx;
+        const candidateLineStressIndices =
+          !isClitic && wordCandidateStresses && wordCandidateStresses.length > 1
+            ? wordCandidateStresses.map(cIdx => wordBaseLineIdx + cIdx)
+            : undefined;
 
         const sylObj: Syllable = {
           text: sylLower,
@@ -594,7 +723,8 @@ export function analyzeText(
           vowelCode: phonetics.vowelChar,
           consonants: consonantsCount,
           stressed: isStressed,
-          misstress: false
+          misstress: false,
+          candidateLineStressIndices
         };
 
         syllables.push(sylObj);
@@ -665,12 +795,31 @@ export function analyzeText(
 
     detectedAnacrusis = bestOffset;
 
+    // Beat-Adaptive Double-Stress / Homograph Resolution:
+    // If a word has multiple valid stresses in the NASU dictionary (e.g., за́мок/замо́к, по́ми́лка, за́вжди́)
+    // and its default stress is off-beat while an alternative valid stress lands directly on bestStrongSet,
+    // automatically shift stress to the beat-aligned syllable!
+    for (let i = 0; i < S; i++) {
+      const syl = allSyllables[i];
+      if (syl.stressed && syl.candidateLineStressIndices && !bestStrongSet.has(i)) {
+        const beatAlignedIdx = syl.candidateLineStressIndices.find(cIdx => bestStrongSet.has(cIdx));
+        if (beatAlignedIdx !== undefined && allSyllables[beatAlignedIdx]) {
+          syl.stressed = false;
+          allSyllables[beatAlignedIdx].stressed = true;
+        }
+      }
+    }
+
+    const updatedStressedIndices = allSyllables
+      .map((s, idx) => (s.stressed ? idx : -1))
+      .filter(idx => idx !== -1);
+
     // Check if P-center intervals between stressed syllables are isochronous (e.g., all intervals are 2 or 3 syllables)
     let isIsochronousChain = false;
-    if (stressedIndices.length >= 2) {
+    if (updatedStressedIndices.length >= 2) {
       const intervals: number[] = [];
-      for (let k = 1; k < stressedIndices.length; k++) {
-        intervals.push(stressedIndices[k] - stressedIndices[k - 1]);
+      for (let k = 1; k < updatedStressedIndices.length; k++) {
+        intervals.push(updatedStressedIndices[k] - updatedStressedIndices[k - 1]);
       }
       const regularIntervals = intervals.filter(d => d === 2 || d === 3 || d === 4).length;
       if (regularIntervals / intervals.length >= 0.75) {

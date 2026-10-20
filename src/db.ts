@@ -21,9 +21,29 @@ export interface Note {
 const DB_NAME = 'b-note-db';
 const STORE_NAME = 'notes';
 const GROUP_STORE = 'groups';
+const STRESS_CACHE_STORE = 'stress_cache';
+const SETTINGS_KEY = 'b-note-song-settings';
+
+export interface ExtendedStressDB {
+  version: number;
+  source: string;
+  stats?: {
+    sourceWordforms: number;
+    uniqueWords: number;
+    stems: number;
+    exact: number;
+    multi: number;
+    suffixRules: number;
+  };
+  s4: Record<string, number>;
+  s3: Record<string, number>;
+  stems: Record<string, number>;
+  exact: Record<string, number>;
+  multi: Record<string, number[]>;
+}
 
 export async function initDB(): Promise<IDBPDatabase> {
-  return openDB(DB_NAME, 2, {
+  return openDB(DB_NAME, 3, {
     upgrade(db, oldVersion) {
       if (oldVersion < 1) {
         const store = db.createObjectStore(STORE_NAME, {
@@ -39,10 +59,48 @@ export async function initDB(): Promise<IDBPDatabase> {
             autoIncrement: true,
           });
         }
-        // Add index for groupId if needed, but we'll just filter for now or use getAll
+      }
+      if (oldVersion < 3) {
+        if (!db.objectStoreNames.contains(STRESS_CACHE_STORE)) {
+          db.createObjectStore(STRESS_CACHE_STORE);
+        }
       }
     },
   });
+}
+
+export async function getCachedStressDB(): Promise<ExtendedStressDB | undefined> {
+  try {
+    const db = await initDB();
+    return await db.get(STRESS_CACHE_STORE, 'nasu_v2');
+  } catch (e) {
+    console.warn('Failed to read stress DB from IndexedDB:', e);
+    return undefined;
+  }
+}
+
+export async function saveCachedStressDB(data: ExtendedStressDB): Promise<void> {
+  try {
+    const db = await initDB();
+    await db.put(STRESS_CACHE_STORE, data, 'nasu_v2');
+  } catch (e) {
+    console.warn('Failed to cache stress DB in IndexedDB:', e);
+  }
+}
+
+export function getSavedCustomDictionary(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.customDictionary === 'object' && parsed.customDictionary !== null) {
+        return parsed.customDictionary;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to read customDictionary from localStorage', e);
+  }
+  return {};
 }
 
 export async function saveNote(note: Note): Promise<number> {
@@ -90,10 +148,15 @@ export async function deleteGroup(id: number): Promise<void> {
   await db.delete(GROUP_STORE, id);
 }
 
-export async function importDatabase(data: { notes?: Note[]; groups?: Group[] }): Promise<{ importedNotes: number; importedGroups: number }> {
+export async function importDatabase(data: {
+  notes?: Note[];
+  groups?: Group[];
+  customDictionary?: Record<string, number>;
+}): Promise<{ importedNotes: number; importedGroups: number; importedWords: number }> {
   const db = await initDB();
   let importedGroups = 0;
   let importedNotes = 0;
+  let importedWords = 0;
 
   if (Array.isArray(data.groups)) {
     const txGroups = db.transaction(GROUP_STORE, 'readwrite');
@@ -125,6 +188,25 @@ export async function importDatabase(data: { notes?: Note[]; groups?: Group[] })
     await txNotes.done;
   }
 
-  return { importedNotes, importedGroups };
+  if (data.customDictionary && typeof data.customDictionary === 'object') {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      const currentSettings = raw ? JSON.parse(raw) : {};
+      const existingDict = currentSettings.customDictionary || {};
+      const mergedDict = { ...existingDict, ...data.customDictionary };
+      importedWords = Object.keys(data.customDictionary).length;
+      localStorage.setItem(
+        SETTINGS_KEY,
+        JSON.stringify({
+          ...currentSettings,
+          customDictionary: mergedDict,
+        })
+      );
+    } catch (e) {
+      console.error('Failed to import customDictionary:', e);
+    }
+  }
+
+  return { importedNotes, importedGroups, importedWords };
 }
 

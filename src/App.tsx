@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Pencil, Download, Upload, Plus, Check } from 'lucide-react';
-import { Note, Group, getAllNotes, saveNote, deleteNote, getAllGroups, importDatabase } from './db';
+import { Note, Group, getAllNotes, saveNote, deleteNote, getAllGroups, importDatabase, getSavedCustomDictionary } from './db';
+import { ensureExtendedStressDB } from './utils/prosodyEngine';
 import NoteEditor from './components/NoteEditor';
 import NoteList from './components/NoteList';
 import SongEditor from './components/song/SongEditor';
@@ -20,6 +21,7 @@ export default function App() {
 
   useEffect(() => {
     loadData();
+    ensureExtendedStressDB();
   }, []);
 
   const loadData = async () => {
@@ -118,9 +120,11 @@ export default function App() {
   };
 
   const handleExport = () => {
+    const customDictionary = getSavedCustomDictionary();
     const exportData = {
       notes,
       groups,
+      customDictionary,
       exportDate: new Date().toISOString()
     };
     const dataStr = JSON.stringify(exportData, null, 2);
@@ -143,9 +147,11 @@ export default function App() {
       const parsed = JSON.parse(text);
       const payload = Array.isArray(parsed) ? { notes: parsed } : parsed;
 
-      const { importedNotes, importedGroups } = await importDatabase(payload);
+      const { importedNotes, importedGroups, importedWords } = await importDatabase(payload);
       await loadData();
-      setImportStatus(`Відновлено: ${importedNotes} записів${importedGroups ? `, ${importedGroups} груп` : ''}`);
+      setImportStatus(
+        `Відновлено: ${importedNotes} записів${importedGroups ? `, ${importedGroups} груп` : ''}${importedWords ? `, ${importedWords} наголосів` : ''}`
+      );
       setTimeout(() => setImportStatus(null), 3000);
     } catch (error) {
       console.error('Failed to import backup:', error);
