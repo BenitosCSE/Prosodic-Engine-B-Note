@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Pencil, Download, Upload, Plus, Check } from 'lucide-react';
-import { Note, Group, getAllNotes, saveNote, deleteNote, getAllGroups, importDatabase, getSavedCustomDictionary } from './db';
+import { Note, Group, getAllNotes, saveNote, deleteNote, getAllGroups, importDatabase, getSavedCustomDictionary, getSavedCustomMetatags } from './db';
 import { ensureExtendedStressDB } from './utils/prosodyEngine';
 import NoteEditor from './components/NoteEditor';
 import NoteList from './components/NoteList';
@@ -121,10 +121,12 @@ export default function App() {
 
   const handleExport = () => {
     const customDictionary = getSavedCustomDictionary();
+    const customSunoMetatags = getSavedCustomMetatags();
     const exportData = {
       notes,
       groups,
       customDictionary,
+      customSunoMetatags,
       exportDate: new Date().toISOString()
     };
     const dataStr = JSON.stringify(exportData, null, 2);

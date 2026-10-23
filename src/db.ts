@@ -148,10 +148,23 @@ export async function deleteGroup(id: number): Promise<void> {
   await db.delete(GROUP_STORE, id);
 }
 
+export function getSavedCustomMetatags(): Record<string, any> | undefined {
+  try {
+    const raw = localStorage.getItem('b-note-suno-metatags-v1');
+    if (raw) {
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.error('Failed to read customSunoMetatags from localStorage', e);
+  }
+  return undefined;
+}
+
 export async function importDatabase(data: {
   notes?: Note[];
   groups?: Group[];
   customDictionary?: Record<string, number>;
+  customSunoMetatags?: Record<string, any>;
 }): Promise<{ importedNotes: number; importedGroups: number; importedWords: number }> {
   const db = await initDB();
   let importedGroups = 0;
@@ -204,6 +217,14 @@ export async function importDatabase(data: {
       );
     } catch (e) {
       console.error('Failed to import customDictionary:', e);
+    }
+  }
+
+  if (data.customSunoMetatags && typeof data.customSunoMetatags === 'object') {
+    try {
+      localStorage.setItem('b-note-suno-metatags-v1', JSON.stringify(data.customSunoMetatags));
+    } catch (e) {
+      console.error('Failed to import customSunoMetatags:', e);
     }
   }
 
