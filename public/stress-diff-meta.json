@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "totalPolysyllabicChecked": 1403896,
+  "matchedByDetectStress": 615433,
+  "diffRecordCount": 788463,
+  "collisionCount": 0,
+  "binarySizeBytes": 7096179,
+  "compileTimeSec": 10.866,
+  "collisions": {}
+}

@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { analyzeText, ProsodyMetrics } from '../utils/prosodyEngine';
+import { analyzeTextCached, ProsodyMetrics } from '../utils/prosodyEngine';
 import { SongSettings } from './useSongSettings';
 
 export type { SongSettings };
@@ -9,7 +9,7 @@ export function useProsody(text: string, settings: SongSettings) {
     if (!text.trim()) {
       return null;
     }
-    return analyzeText(
+    return analyzeTextCached(
       text,
       settings.bpm,
       settings.beats,
@@ -20,4 +20,3 @@ export function useProsody(text: string, settings: SongSettings) {
 
   return { metrics, isAnalyzing: false };
 }
-

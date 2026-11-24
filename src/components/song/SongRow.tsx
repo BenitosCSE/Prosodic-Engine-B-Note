@@ -1,12 +1,18 @@
-import React, { useRef, useEffect } from 'react';
-import { MoreVertical, Trash2, ArrowUp, ArrowDown, LayoutList, Lock } from 'lucide-react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { MoreVertical, Trash2, ArrowUp, ArrowDown, LayoutList, Lock, Sparkles } from 'lucide-react';
 import { Row } from './types';
 import { SongSettings } from '../../hooks/useSongSettings';
 import { useProsody } from '../../hooks/useProsody';
-import { VOWELS } from '../../utils/prosodyEngine';
+import { VOWELS, analyzeTextCached } from '../../utils/prosodyEngine';
+import {
+  AnchorLineInfo,
+  RankedRhymeCandidate,
+  queryAndRankRhymes,
+} from '../../utils/rhymeEngine';
 import MetricsRow, { RhymeGroupBadge } from './MetricsRow';
 import StressOverlay from './StressOverlay';
 import MetatagInlineBuilder from './MetatagInlineBuilder';
+import RhymeSuggestionsDropdown from './RhymeSuggestionsDropdown';
 import {
   LATIN_SECTION_PRESETS,
   normalizeSectionToLatin,
@@ -27,11 +33,13 @@ interface SongRowProps {
   settings: SongSettings;
   rhymeGroup?: RhymeGroupBadge | null;
   sectionSummary?: SectionDeltaSummary | null;
+  anchorLineInfo?: AnchorLineInfo | null;
   autoFocusId?: string | null;
   isMetatagMode?: boolean;
   customMetatagStore: CustomMetatagStore;
   previousSameSectionChips?: MetatagChip[] | null;
   previousAnySectionChips?: MetatagChip[] | null;
+  onFocusRow?: (id: string, manualTrigger?: boolean) => void;
   onUpdate: (id: string, text: string) => void;
   onUpdateMetatags: (id: string, chips: MetatagChip[]) => void;
   onAddCustomTagToStore: (
@@ -56,11 +64,13 @@ const SongRow: React.FC<SongRowProps> = ({
   settings,
   rhymeGroup,
   sectionSummary,
+  anchorLineInfo = null,
   autoFocusId,
   isMetatagMode = false,
   customMetatagStore,
   previousSameSectionChips,
   previousAnySectionChips,
+  onFocusRow,
   onUpdate,
   onUpdateMetatags,
   onAddCustomTagToStore,
@@ -74,6 +84,23 @@ const SongRow: React.FC<SongRowProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sectionInputRef = useRef<HTMLInputElement>(null);
   const { metrics } = useProsody(row.text, settings);
+
+  const [isRowExpanded, setIsRowExpanded] = useState(false);
+  const [isSectionExpanded, setIsSectionExpanded] = useState(false);
+
+  // Live Rhyme Suggestions State
+  const [rhymeCandidates, setRhymeCandidates] = useState<RankedRhymeCandidate[]>([]);
+  const [selectedRhymeIdx, setSelectedRhymeIdx] = useState(0);
+  const [isRhymeDismissed, setIsRhymeDismissed] = useState(false);
+  const [manualRhymeTrigger, setManualRhymeTrigger] = useState(false);
+  const [insertWithAccent, setInsertWithAccent] = useState(settings.showStressHighlight);
+  const [excludeVerbs, setExcludeVerbs] = useState(false);
+  const [rhymeQueryTimeMs, setRhymeQueryTimeMs] = useState(0);
+  const [activeDeltaS, setActiveDeltaS] = useState(2);
+
+  useEffect(() => {
+    setInsertWithAccent(settings.showStressHighlight);
+  }, [settings.showStressHighlight]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -93,6 +120,142 @@ const SongRow: React.FC<SongRowProps> = ({
       }
     }
   }, [autoFocusId, row.id, row.isSection, isMetatagMode]);
+
+  // Split current line into completed prefix before the tail word vs partial tail word
+  const parseLinePrefixAndTail = useCallback((text: string) => {
+    const endsWithSpace = /\s$/.test(text);
+    if (endsWithSpace || !text.trim()) {
+      return { prefixText: text.trimEnd(), partialWord: '' };
+    }
+    const match = text.match(/^(.*?\s)?([a-zA-Zа-яА-ЯіїєґІЇЄҐ\u0301'’ʼ‘`]+)$/);
+    if (!match) {
+      return { prefixText: text, partialWord: '' };
+    }
+    return {
+      prefixText: (match[1] || '').trimEnd(),
+      partialWord: match[2] || '',
+    };
+  }, []);
+
+  // Debounced Live Rhyme Trigger when ΔS = S_target - S_current is in 1..3 (or manual Ctrl+Space)
+  useEffect(() => {
+    if (
+      row.isSection ||
+      isMetatagMode ||
+      !isRowExpanded ||
+      !anchorLineInfo ||
+      (isRhymeDismissed && !manualRhymeTrigger)
+    ) {
+      setRhymeCandidates([]);
+      return;
+    }
+
+    const currentS = metrics?.S ?? 0;
+    const targetS = anchorLineInfo.targetSyllables;
+    const rawDelta = targetS - currentS;
+
+    const { prefixText, partialWord } = parseLinePrefixAndTail(row.text);
+    const prefixMetrics = prefixText
+      ? analyzeTextCached(
+          prefixText,
+          settings.bpm,
+          settings.beats,
+          settings.customDictionary,
+          settings.subdivisions
+        )
+      : null;
+    const prefixS = prefixMetrics?.S ?? 0;
+    const deltaFromPrefix = targetS - prefixS;
+
+    // Trigger automatically when user has written at least 2 syllables and remaining ΔS is 1..3
+    const autoInZone =
+      currentS >= 2 &&
+      ((rawDelta >= 1 && rawDelta <= 3) ||
+        (partialWord.length > 0 && deltaFromPrefix >= 1 && deltaFromPrefix <= 3));
+
+    if (!autoInZone && !manualRhymeTrigger) {
+      setRhymeCandidates([]);
+      return;
+    }
+
+    const effectiveDeltaS =
+      rawDelta >= 1 && rawDelta <= 3
+        ? rawDelta
+        : deltaFromPrefix >= 1 && deltaFromPrefix <= 4
+          ? deltaFromPrefix
+          : Math.max(1, Math.min(3, rawDelta > 0 ? rawDelta : 2));
+
+    const usePrefixFilter = rawDelta < 1 && partialWord.length >= 1 ? partialWord : '';
+    const baseTextForJunction = usePrefixFilter ? prefixText : row.text.trimEnd();
+    const baseMetricsForJunction = usePrefixFilter ? prefixMetrics : metrics;
+
+    const timer = setTimeout(async () => {
+      const res = await queryAndRankRhymes({
+        rhymeSignature: anchorLineInfo.rhymeSignature,
+        anchorWord: anchorLineInfo.anchorWord,
+        deltaS: effectiveDeltaS,
+        linePrefixText: baseTextForJunction,
+        prefixWordFilter: usePrefixFilter,
+        currentLineMetrics: baseMetricsForJunction,
+        bpm: settings.bpm,
+        beats: settings.beats,
+        excludeVerbs,
+      });
+      setActiveDeltaS(effectiveDeltaS);
+      setRhymeCandidates(res.candidates);
+      setRhymeQueryTimeMs(res.queryTimeMs);
+      setSelectedRhymeIdx(0);
+    }, 55);
+
+    return () => clearTimeout(timer);
+  }, [
+    row.text,
+    row.isSection,
+    isMetatagMode,
+    isRowExpanded,
+    anchorLineInfo,
+    isRhymeDismissed,
+    manualRhymeTrigger,
+    excludeVerbs,
+    metrics,
+    settings.bpm,
+    settings.beats,
+    settings.customDictionary,
+    settings.subdivisions,
+    parseLinePrefixAndTail,
+  ]);
+
+  const handleInsertRhymeCandidate = (cand: RankedRhymeCandidate) => {
+    const wordToInsert = insertWithAccent ? cand.stressedWord : cand.word;
+    const currentS = metrics?.S ?? 0;
+    const targetS = anchorLineInfo?.targetSyllables ?? 8;
+    const rawDelta = targetS - currentS;
+    const { prefixText, partialWord } = parseLinePrefixAndTail(row.text);
+
+    let nextText = '';
+    if (rawDelta >= 1 && !/\s$/.test(row.text) && partialWord.length > 0 && rawDelta <= 3) {
+      // User finished a word and hasn't typed a space yet, or is appending the final word
+      nextText = `${row.text.trimEnd()} ${wordToInsert}`;
+    } else if (/\s$/.test(row.text) || !row.text.trim()) {
+      nextText = `${row.text.trimEnd()}${row.text.trim() ? ' ' : ''}${wordToInsert}`;
+    } else {
+      // Replace partial word at end of line
+      nextText = prefixText ? `${prefixText} ${wordToInsert}` : wordToInsert;
+    }
+
+    onUpdate(row.id, nextText);
+    setRhymeCandidates([]);
+    setManualRhymeTrigger(false);
+    setIsRhymeDismissed(true);
+
+    setTimeout(() => {
+      if (textareaRef.current) {
+        const len = nextText.length;
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(len, len);
+      }
+    }, 0);
+  };
 
   const applyAccentAtCharIndex = (val: string, targetCharIndex: number) => {
     if (isMetatagMode) return;
@@ -134,6 +297,8 @@ const SongRow: React.FC<SongRowProps> = ({
     const val = e.target.value;
     const cursor = e.target.selectionStart;
 
+    setIsRhymeDismissed(false);
+
     // Shortcut logic: letter + . + space + space
     if (cursor !== null && cursor >= 4) {
       const last4 = val.substring(cursor - 4, cursor);
@@ -152,6 +317,45 @@ const SongRow: React.FC<SongRowProps> = ({
     if (isMetatagMode) {
       e.preventDefault();
       return;
+    }
+
+    // Manual trigger for Rhyme Dropdown: Ctrl + Space
+    if ((e.ctrlKey || e.metaKey) && (e.code === 'Space' || e.key === ' ')) {
+      e.preventDefault();
+      setIsRhymeDismissed(false);
+      setManualRhymeTrigger(true);
+      onFocusRow?.(row.id, true);
+      return;
+    }
+
+    // Keyboard navigation when Live Rhyme Dropdown is open
+    if (rhymeCandidates.length > 0 && isRowExpanded) {
+      const visibleCount = Math.min(12, rhymeCandidates.length);
+      if (e.key === 'ArrowDown' && !e.altKey) {
+        e.preventDefault();
+        setSelectedRhymeIdx(prev => (prev + 1) % visibleCount);
+        return;
+      }
+      if (e.key === 'ArrowUp' && !e.altKey) {
+        e.preventDefault();
+        setSelectedRhymeIdx(prev => (prev - 1 + visibleCount) % visibleCount);
+        return;
+      }
+      if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+        e.preventDefault();
+        const chosen = rhymeCandidates[selectedRhymeIdx] || rhymeCandidates[0];
+        if (chosen) {
+          handleInsertRhymeCandidate(chosen);
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setRhymeCandidates([]);
+        setIsRhymeDismissed(true);
+        setManualRhymeTrigger(false);
+        return;
+      }
     }
 
     // Alt + ArrowUp / ArrowDown: move row up/down
@@ -225,9 +429,6 @@ const SongRow: React.FC<SongRowProps> = ({
     onUpdate(row.id, updatedText);
   };
 
-  const [isRowExpanded, setIsRowExpanded] = React.useState(false);
-  const [isSectionExpanded, setIsSectionExpanded] = React.useState(false);
-
   const handleMobileFocusScroll = (el: HTMLElement | null) => {
     if (!el || typeof window === 'undefined') return;
     if (window.innerWidth < 768) {
@@ -272,7 +473,6 @@ const SongRow: React.FC<SongRowProps> = ({
             }}
             onChange={e => {
               if (isMetatagMode) return;
-              // Force Latin uppercase & strip numbers on manual edit
               const raw = e.target.value.toUpperCase().replace(/[0-9]/g, '');
               onUpdate(row.id, raw);
             }}
@@ -322,7 +522,6 @@ const SongRow: React.FC<SongRowProps> = ({
           )}
         </div>
 
-        {/* Quick Latin Unnumbered Section Presets (Expanded in Normal Mode, or visible in Metatag Mode) */}
         {(isSectionExpanded || isMetatagMode) && (
           <div
             onClick={e => e.stopPropagation()}
@@ -368,7 +567,6 @@ const SongRow: React.FC<SongRowProps> = ({
           </div>
         )}
 
-        {/* Next Line After [SECTION]: Interactive Metatag Chain Builder */}
         <MetatagInlineBuilder
           sectionHeader={normalizedDisplay}
           chips={row.metatags || []}
@@ -384,12 +582,14 @@ const SongRow: React.FC<SongRowProps> = ({
     );
   }
 
-  // Regular Lyric Row — Completely Locked & Non-Interactive when isMetatagMode === true
+  // Regular Lyric Row
   return (
     <div
       onBlur={e => {
         if (!e.currentTarget.contains(e.relatedTarget as Node)) {
           setIsRowExpanded(false);
+          setRhymeCandidates([]);
+          setManualRhymeTrigger(false);
         }
       }}
       className={`studio-row group relative py-0.5 px-1 sm:px-2 rounded-lg flex items-start gap-1 sm:gap-1.5 border-l-2 transition-opacity ${
@@ -430,6 +630,7 @@ const SongRow: React.FC<SongRowProps> = ({
               if (isMetatagMode) return;
               handleTextareaClick(e);
               setIsRowExpanded(true);
+              onFocusRow?.(row.id, false);
             }}
             onFocus={e => {
               if (isMetatagMode) {
@@ -437,9 +638,10 @@ const SongRow: React.FC<SongRowProps> = ({
                 return;
               }
               setIsRowExpanded(true);
+              onFocusRow?.(row.id, false);
               handleMobileFocusScroll(e.currentTarget);
             }}
-            placeholder="Рядок... (Enter — новий рядок, . + 2 пробіли або клік по складу — наголос)"
+            placeholder="Рядок... (Enter — новий, Ctrl+Space — підбір рими, . + 2 пробіли — наголос)"
             rows={1}
             className={`w-full bg-transparent px-1.5 py-0.5 text-base sm:text-lg leading-snug outline-none resize-none overflow-hidden placeholder:text-gray-700/70 placeholder:text-xs ${
               settings.showStressHighlight && !isMetatagMode
@@ -450,16 +652,57 @@ const SongRow: React.FC<SongRowProps> = ({
           />
         </div>
 
+        {/* Live Rhyme Suggestions Dropdown near caret when ΔS = 1..3 or Ctrl+Space */}
+        {!isMetatagMode && isRowExpanded && anchorLineInfo && rhymeCandidates.length > 0 && (
+          <RhymeSuggestionsDropdown
+            anchorInfo={anchorLineInfo}
+            deltaS={activeDeltaS}
+            candidates={rhymeCandidates}
+            selectedIndex={selectedRhymeIdx}
+            insertWithAccent={insertWithAccent}
+            excludeVerbs={excludeVerbs}
+            queryTimeMs={rhymeQueryTimeMs}
+            onSelectCandidate={handleInsertRhymeCandidate}
+            onToggleInsertWithAccent={() => setInsertWithAccent(prev => !prev)}
+            onToggleExcludeVerbs={() => setExcludeVerbs(prev => !prev)}
+            onClose={() => {
+              setRhymeCandidates([]);
+              setIsRhymeDismissed(true);
+              setManualRhymeTrigger(false);
+            }}
+          />
+        )}
+
         {settings.showMetrics && metrics && !isMetatagMode && (
-          <div className="px-1.5 pb-0.5">
-            <MetricsRow
-              metrics={metrics}
-              bpm={settings.bpm}
-              rhymeGroup={rhymeGroup}
-              isExpanded={isRowExpanded}
-              onToggleExpand={() => setIsRowExpanded(prev => !prev)}
-              onToggleSyllableStress={handleToggleSyllableStress}
-            />
+          <div className="px-1.5 pb-0.5 flex items-center justify-between gap-2">
+            <div className="flex-grow min-w-0">
+              <MetricsRow
+                metrics={metrics}
+                bpm={settings.bpm}
+                rhymeGroup={rhymeGroup}
+                isExpanded={isRowExpanded}
+                onToggleExpand={() => setIsRowExpanded(prev => !prev)}
+                onToggleSyllableStress={handleToggleSyllableStress}
+              />
+            </div>
+
+            {/* Quick 1-click manual Rhyme Trigger button when an anchor exists */}
+            {isRowExpanded && anchorLineInfo && rhymeCandidates.length === 0 && (
+              <button
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => {
+                  setIsRhymeDismissed(false);
+                  setManualRhymeTrigger(true);
+                  onFocusRow?.(row.id, true);
+                }}
+                className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-orange-accent/15 hover:bg-orange-accent/25 border border-orange-accent/40 text-orange-accent text-[9px] font-bold uppercase tracking-wider cursor-pointer transition-all"
+                title={`Підібрати риму до «${anchorLineInfo.anchorWord}» (Ctrl+Space)`}
+              >
+                <Sparkles size={9} />
+                <span>Рима (-{anchorLineInfo.rhymeSignature})</span>
+              </button>
+            )}
           </div>
         )}
       </div>

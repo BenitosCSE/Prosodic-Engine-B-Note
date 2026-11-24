@@ -47,9 +47,14 @@ import { SongContent, Row } from './types';
 import {
   VOWELS,
   applyAccentsToText,
-  analyzeText,
+  analyzeTextCached,
   compareRhymeSignatures,
+  ensureBinaryStressDiff,
 } from '../../utils/prosodyEngine';
+import {
+  StanzaRhymeScheme,
+  resolveStanzaAnchorLine,
+} from '../../utils/rhymeEngine';
 import SongSettingsPanel from './SongSettings';
 import SongToolbar from './SongToolbar';
 import SongRow, { SectionDeltaSummary } from './SongRow';
@@ -219,6 +224,22 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, groups, onSave, onClose, 
   const [showGroupPicker, setShowGroupPicker] = useState(false);
   const [isAnalyzeModalOpen, setIsAnalyzeModalOpen] = useState(false);
   const [analyzeTextValue, setAnalyzeTextValue] = useState('');
+  const [rhymeScheme, setRhymeScheme] = useState<StanzaRhymeScheme>('ABAB');
+  const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+  const [manualRhymeTrigger, setManualRhymeTrigger] = useState(false);
+  const [debouncedRows, setDebouncedRows] = useState<Row[]>([]);
+
+  useEffect(() => {
+    ensureBinaryStressDiff();
+  }, []);
+
+  // 55ms debounce for heavy cross-row stanza & rhyme badge aggregations
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedRows(rows);
+    }, 55);
+    return () => clearTimeout(timer);
+  }, [rows]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -549,12 +570,13 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, groups, onSave, onClose, 
 
     interface Block {
       sectionRowId: string | null;
-      lyricRows: { id: string; metrics: ReturnType<typeof analyzeText> }[];
+      lyricRows: { id: string; metrics: ReturnType<typeof analyzeTextCached> }[];
     }
 
     const blocks: Block[] = [{ sectionRowId: null, lyricRows: [] }];
+    const activeRowsForAggregation = debouncedRows.length > 0 ? debouncedRows : rows;
 
-    rows.forEach(r => {
+    activeRowsForAggregation.forEach(r => {
       if (r.isSection) {
         const normName = normalizeSectionToLatin(r.text);
         prevSameMap[r.id] = lastChipsBySectionName[normName] || null;
@@ -567,7 +589,7 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, groups, onSave, onClose, 
 
         blocks.push({ sectionRowId: r.id, lyricRows: [] });
       } else if (r.text.trim()) {
-        const m = analyzeText(
+        const m = analyzeTextCached(
           r.text,
           settings.bpm,
           settings.beats,
@@ -665,7 +687,32 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, groups, onSave, onClose, 
       prevSameSectionChipsByRowId: prevSameMap,
       prevAnySectionChipsByRowId: prevAnyMap,
     };
-  }, [rows, settings.bpm, settings.beats, settings.customDictionary, settings.subdivisions]);
+  }, [debouncedRows, rows.length, settings.bpm, settings.beats, settings.customDictionary, settings.subdivisions]);
+
+  // Compute active Stanza Anchor Line for the currently focused lyric row
+  const activeAnchorLineInfo = useMemo(() => {
+    if (!focusedRowId || isMetatagMode) return null;
+    return resolveStanzaAnchorLine(
+      rows,
+      focusedRowId,
+      rhymeScheme,
+      settings.bpm,
+      settings.beats,
+      settings.customDictionary,
+      settings.subdivisions,
+      manualRhymeTrigger
+    );
+  }, [
+    rows,
+    focusedRowId,
+    isMetatagMode,
+    rhymeScheme,
+    settings.bpm,
+    settings.beats,
+    settings.customDictionary,
+    settings.subdivisions,
+    manualRhymeTrigger,
+  ]);
 
   const performSave = useCallback(async () => {
     const learnedDict = extractStressedWords(rows);
@@ -1476,6 +1523,8 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, groups, onSave, onClose, 
               onSave={performSave}
               onCopy={handleCopy}
               isSaved={isSaved}
+              rhymeScheme={rhymeScheme}
+              onChangeRhymeScheme={setRhymeScheme}
             />
           </div>
         )}
@@ -1503,11 +1552,16 @@ const SongEditor: React.FC<SongEditorProps> = ({ note, groups, onSave, onClose, 
                     settings={settings}
                     rhymeGroup={rhymeGroupsByRowId[row.id] || null}
                     sectionSummary={sectionSummariesByRowId[row.id] || null}
+                    anchorLineInfo={focusedRowId === row.id ? activeAnchorLineInfo : null}
                     autoFocusId={autoFocusId}
                     isMetatagMode={isMetatagMode}
                     customMetatagStore={customMetatagStore}
                     previousSameSectionChips={prevSameSectionChipsByRowId[row.id] || null}
                     previousAnySectionChips={prevAnySectionChipsByRowId[row.id] || null}
+                    onFocusRow={(id, manual) => {
+                      setFocusedRowId(id);
+                      if (manual !== undefined) setManualRhymeTrigger(manual);
+                    }}
                     onUpdate={handleUpdateRow}
                     onUpdateMetatags={handleUpdateMetatags}
                     onAddCustomTagToStore={handleAddCustomTagToStore}

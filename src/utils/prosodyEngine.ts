@@ -4,6 +4,119 @@ import { ExtendedStressDB, getCachedStressDB, saveCachedStressDB } from '../db';
 let extendedStressDB: ExtendedStressDB | null = null;
 let loadingPromise: Promise<ExtendedStressDB | null> | null = null;
 
+// Zero-Copy Binary Stress Diff Buffer (loaded from /stress-diff.bin without JSON.parse)
+let binaryDiffView: DataView | null = null;
+let binaryDiffCount = 0;
+let binaryCollisions: Record<string, number> = {};
+let binaryLoadingPromise: Promise<boolean> | null = null;
+
+// Incremental Dirty-Line Metrics Cache (O(1) reuse for unchanged lines)
+const MAX_LINE_CACHE_SIZE = 2500;
+const lineMetricsCache = new Map<string, ProsodyMetrics>();
+let cachedDictRef: Record<string, number> | null = null;
+let cachedDictVersion = 0;
+
+export function clearProsodyLineCache(): void {
+  lineMetricsCache.clear();
+}
+
+const utf8Encoder = new TextEncoder();
+
+/**
+ * Deterministic 64-bit FNV-1a hash over UTF-8 bytes of a normalized word.
+ * Matches Python `fnv1a_64` bit-for-bit.
+ */
+export function fnv1a64(word: string): bigint {
+  const bytes = utf8Encoder.encode(word);
+  let h = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= BigInt(bytes[i]);
+    h = (h * prime) & mask;
+  }
+  return h;
+}
+
+/**
+ * Zero-Copy O(log N) binary search over /stress-diff.bin (9-byte records: <QB).
+ */
+export function lookupBinaryStressDiff(
+  cleanWord: string
+): { primary: number; isHomograph: boolean } | null {
+  if (!binaryDiffView || binaryDiffCount <= 0) return null;
+
+  if (binaryCollisions[cleanWord] !== undefined) {
+    const sb = binaryCollisions[cleanWord];
+    return { primary: sb & 0x3f, isHomograph: Boolean(sb & 0x80) };
+  }
+
+  const target = fnv1a64(cleanWord);
+  let lo = 0;
+  let hi = binaryDiffCount - 1;
+  const view = binaryDiffView;
+  const HEADER_SIZE = 12;
+  const RECORD_SIZE = 9;
+
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const offset = HEADER_SIZE + mid * RECORD_SIZE;
+    const h = view.getBigUint64(offset, true);
+    if (h === target) {
+      const sb = view.getUint8(offset + 8);
+      return { primary: sb & 0x3f, isHomograph: Boolean(sb & 0x80) };
+    } else if (h < target) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return null;
+}
+
+/**
+ * Loads the Zero-Copy binary diff dictionary (/stress-diff.bin) as an ArrayBuffer/DataView.
+ */
+export async function ensureBinaryStressDiff(): Promise<boolean> {
+  if (binaryDiffView) return true;
+  if (binaryLoadingPromise) return binaryLoadingPromise;
+
+  binaryLoadingPromise = (async () => {
+    try {
+      const [binResp, metaResp] = await Promise.all([
+        fetch('/stress-diff.bin'),
+        fetch('/stress-diff-meta.json').catch(() => null),
+      ]);
+      if (binResp.ok) {
+        const buf = await binResp.arrayBuffer();
+        if (buf.byteLength >= 12) {
+          const view = new DataView(buf);
+          // Check magic "BNSD" (0x44534e42 little-endian)
+          const m0 = view.getUint8(0);
+          const m1 = view.getUint8(1);
+          const m2 = view.getUint8(2);
+          const m3 = view.getUint8(3);
+          if (m0 === 0x42 && m1 === 0x4e && m2 === 0x53 && m3 === 0x44) {
+            binaryDiffCount = view.getUint32(8, true);
+            binaryDiffView = view;
+            if (metaResp && metaResp.ok) {
+              const meta = await metaResp.json();
+              binaryCollisions = meta.collisions || {};
+            }
+            lineMetricsCache.clear();
+            return true;
+          }
+        }
+      }
+    } catch (e) {
+      // Fallback to morphological rules + bootstrap dictionary
+    }
+    return false;
+  })();
+
+  return binaryLoadingPromise;
+}
+
 const ENDINGS_SET = new Set([
   "уватися", "юватися", "увалися", "ювалися", "уватиме", "юватиме",
   "ований", "ованого", "ованому", "ованим", "ованім", "ована", "ованої", "ованій", "овану", "ованою", "оване", "овані", "ованих", "ованими",
@@ -25,6 +138,8 @@ const ENDINGS_SET = new Set([
 ]);
 
 export async function ensureExtendedStressDB(): Promise<ExtendedStressDB | null> {
+  // Prioritize Zero-Copy Binary Diff Index first
+  await ensureBinaryStressDiff();
   if (extendedStressDB) return extendedStressDB;
   if (loadingPromise) return loadingPromise;
 
@@ -33,17 +148,19 @@ export async function ensureExtendedStressDB(): Promise<ExtendedStressDB | null>
       const cached = await getCachedStressDB();
       if (cached && cached.version === 2) {
         extendedStressDB = cached;
+        lineMetricsCache.clear();
         return cached;
       }
       const response = await fetch('/stress-db.json');
       if (response.ok) {
         const data: ExtendedStressDB = await response.json();
         extendedStressDB = data;
+        lineMetricsCache.clear();
         await saveCachedStressDB(data);
         return data;
       }
     } catch (e) {
-      console.warn('Extended stress DB fallback to bootstrap dictionary:', e);
+      console.warn('Extended stress DB fallback to binary/bootstrap dictionary:', e);
     }
     return null;
   })();
@@ -62,10 +179,22 @@ const FAST_NARROW_VOWELS = new Set(["і", "ї", "и", "у", "ю", "i", "u", "y"]
 const IOTATED = new Set(["я", "ю", "є"]);
 const APOSTROPHES = new Set(["'", "’", "ʼ", "‘", "`"]);
 
+// Fix #1: Explicit Ukrainian monosyllabic functional clitics set
+// Short content words (зло, дно, гра, сто, три, два, свій) are NOT in this set and preserve stress!
+export const CLITICS_SET = new Set([
+  "і", "й", "а", "та", "як", "що", "не", "ні", "бо", "чи", "то",
+  "за", "на", "по", "до", "зі", "у", "в", "з", "із", "би", "б",
+  "же", "ж", "від", "під", "над"
+]);
+
 const Kh = 0.25;
 const Gh = 0.15;
 const Xh = 0.1;
 const Zh = 6;
+// Fix #3: Smooth asymptotic cluster damping coefficient (replaces linear 1 - 1.4*load + hard 0.5 floor)
+export const K_CLUSTER_DECAY = 1.85;
+
+export type OnsetClass = 'vowel' | 'glide' | 'sonorant' | 'obstruent';
 
 export interface Syllable {
   text: string;
@@ -99,7 +228,7 @@ export interface ProsodyMetrics {
   Cavg: number;          // Average phonetic consonants per syllable
   SD: number;            // Syllable density per beat
   r: number;             // Articulation rate (syllables/sec)
-  rMax: number;          // Max recommended rate
+  rMax: number;          // Max recommended rate (smooth asymptotic curve)
   BPMmax: number;        // Max recommended BPM
   A: number;             // Stress-to-grid accuracy (0..1)
   singability: number;   // 0-100
@@ -121,6 +250,130 @@ export function isVowel(char: string): boolean {
 export function isSectionMarker(text: string): boolean {
   const t = text.trim();
   return t.length > 2 && t.startsWith("[") && t.endsWith("]");
+}
+
+/**
+ * Classifies the initial phoneme of a word for cross-word junction biomechanics.
+ */
+export function classifyWordOnset(wordClean: string): OnsetClass {
+  const w = wordClean.toLowerCase().replace(/[\u0301'’ʼ‘`ь]/g, '').trim();
+  if (!w) return 'vowel';
+  const first = w[0];
+  if (IOTATED.has(first) || first === 'ї' || GLIDES.has(first)) {
+    return 'glide';
+  }
+  if (VOWELS.has(first)) {
+    return 'vowel';
+  }
+  if (SONORANTS.has(first)) {
+    return 'sonorant';
+  }
+  return 'obstruent';
+}
+
+export interface JunctionEvaluation {
+  junctionType: 'sandhi' | 'glide_smooth' | 'muta_cum_liquida' | 'sonorant_to_obstruent' | 'obstruent_clash' | 'hiatus' | 'neutral';
+  junctionDelta: number;
+  projectedBpmMax: number;
+  tempoOverload: boolean;
+  hasClash: boolean;
+  warning: boolean;
+  biomechanicalScore: number; // Higher is smoother
+}
+
+/**
+ * Evaluates biomechanical transition at the word boundary between the current line prefix
+ * and a candidate rhyme word, plus projects whether BPM > BPM_max * 0.9.
+ */
+export function evaluateJunctionBiomechanics(
+  linePrefixText: string,
+  candidateOnset: OnsetClass,
+  candidateSyllables: number,
+  candidateSingability: number,
+  currentMetrics: ProsodyMetrics | null,
+  bpm: number,
+  beats: number
+): JunctionEvaluation {
+  const cleanPrefix = linePrefixText.toLowerCase().replace(/[\u0301'’ʼ‘`ь]/g, '').trim();
+  const lastChar = cleanPrefix.length > 0 ? cleanPrefix[cleanPrefix.length - 1] : '';
+
+  let junctionDelta = 0.0;
+  let junctionType: JunctionEvaluation['junctionType'] = 'neutral';
+
+  if (!lastChar || !CONSONANTS.has(lastChar)) {
+    // Prefix ends in an open vowel
+    if (candidateOnset === 'glide') {
+      junctionDelta = -0.06;
+      junctionType = 'glide_smooth';
+    } else if (candidateOnset === 'vowel') {
+      junctionDelta = 0.05;
+      junctionType = 'hiatus';
+    }
+  } else {
+    // Prefix ends in a consonant
+    const prevIsObstruent = PLOSIVES.has(lastChar) || SIBILANTS.has(lastChar);
+    if (candidateOnset === 'vowel') {
+      // Cross-word Sandhi: closed coda resyllabifies into candidate's vowel onset
+      junctionDelta = -0.15;
+      junctionType = 'sandhi';
+    } else if (candidateOnset === 'glide' || candidateOnset === 'sonorant') {
+      junctionDelta = prevIsObstruent ? 0.12 : 0.08;
+      junctionType = 'muta_cum_liquida';
+    } else if (candidateOnset === 'obstruent') {
+      if (prevIsObstruent) {
+        // Heavy obstruent clash (Δ = 0.36)
+        junctionDelta = 0.36;
+        junctionType = 'obstruent_clash';
+      } else {
+        junctionDelta = 0.18;
+        junctionType = 'sonorant_to_obstruent';
+      }
+    }
+  }
+
+  const curS = currentMetrics?.S ?? 0;
+  const curSEff = currentMetrics?.S_eff ?? 0;
+  const curO = currentMetrics?.O ?? 0.65;
+  const curClusterSum = currentMetrics
+    ? currentMetrics.syllables.reduce((acc, s) => acc + (s.articulatoryLoad ?? 0), 0)
+    : 0;
+
+  const candS = Math.max(1, candidateSyllables);
+  const candO = Math.max(0, Math.min(1, candidateSingability / 100));
+  const candSEff = candS * (1.1 + (1 - candO) * 0.25);
+
+  const totalS = Math.max(1, curS + candS);
+  const totalSEff = Math.max(0.5, curSEff + candSEff + Math.max(0, junctionDelta));
+  const totalO = Math.min(
+    1,
+    (curO * curS + candO * candS + (junctionType === 'sandhi' ? 0.35 : 0)) / totalS
+  );
+  const avgCluster = (curClusterSum + Math.max(0, junctionDelta)) / totalS;
+
+  const rMax = (Zh / (1.0 + K_CLUSTER_DECAY * avgCluster)) * (1.0 + 0.25 * (totalO - 0.5));
+  const safeBeats = Math.max(1, beats);
+  const projectedBpmMax = (rMax * 60 * safeBeats) / totalSEff;
+
+  const tempoOverload = bpm > projectedBpmMax * 0.9;
+  const hasClash = junctionType === 'obstruent_clash';
+  const warning = hasClash || tempoOverload;
+
+  // Biomechanical score: reward sandhi & glide transitions, penalize clashes & tempo overload
+  let biomechanicalScore = 50 - junctionDelta * 100 + candO * 20;
+  if (junctionType === 'sandhi') biomechanicalScore += 18;
+  if (junctionType === 'glide_smooth') biomechanicalScore += 12;
+  if (hasClash) biomechanicalScore -= 45;
+  if (tempoOverload) biomechanicalScore -= 35;
+
+  return {
+    junctionType,
+    junctionDelta: Math.round(junctionDelta * 1000) / 1000,
+    projectedBpmMax: Math.round(projectedBpmMax * 10) / 10,
+    tempoOverload,
+    hasClash,
+    warning,
+    biomechanicalScore: Math.round(biomechanicalScore * 10) / 10,
+  };
 }
 
 /**
@@ -146,10 +399,8 @@ export function splitGraphemes(str: string): string[] {
 export function normalizeUkrainianPhonetics(strLower: string): string {
   return strLower
     .replace(/\u0301/g, '')
-    // Reflexive verb endings -ться / -шся -> single prolonged phoneme
     .replace(/ться/g, 'ця')
     .replace(/шся/g, 'ся')
-    // Classical Ukrainian cluster simplifications in living pronunciation
     .replace(/стн/g, 'сн')
     .replace(/здн/g, 'зн')
     .replace(/стл/g, 'сл')
@@ -187,7 +438,6 @@ export function analyzeSyllablePhonetics(
         phones.push('й');
       }
     } else if (CONSONANTS.has(ch)) {
-      // Affricate digraphs дж / дз act as 1 phoneme
       if (ch === 'д' && (normalized[i + 1] === 'ж' || normalized[i + 1] === 'з')) {
         phones.push(ch + normalized[i + 1]);
         i++;
@@ -202,7 +452,6 @@ export function analyzeSyllablePhonetics(
     return { count: 0, articulatoryLoad: 0, vowelChar };
   }
 
-  // First consonant in a syllable is natural onset (0 extra cluster penalty)
   let articulatoryLoad = 0;
   for (let i = 1; i < phones.length; i++) {
     const prev = phones[i - 1];
@@ -214,13 +463,10 @@ export function analyzeSyllablePhonetics(
     const currIsObstruent = PLOSIVES.has(curr) || SIBILANTS.has(curr) || curr === 'дж' || curr === 'дз';
 
     if (prevIsObstruent && currIsSonorant) {
-      // Muta cum liquida (пр, тр, кр, пл, бл, кл, сл, зн) — smooth single-gesture articulation
       articulatoryLoad += 0.12;
     } else if (prevIsSonorant && currIsObstruent) {
-      // Sonorant-to-obstruent descent (рт, лк, нк, мп)
       articulatoryLoad += 0.18;
     } else if (prevIsObstruent && currIsObstruent) {
-      // Heavy obstruent/sibilant clash (кт, пт, гд, тч, сш, зж, стк) — forces vocal tract reset
       articulatoryLoad += 0.36;
     } else {
       articulatoryLoad += Kh;
@@ -230,16 +476,10 @@ export function analyzeSyllablePhonetics(
   return { count, articulatoryLoad, vowelChar };
 }
 
-/**
- * Counts phonetic consonant load in a syllable.
- */
 export function countPhoneticConsonants(sylLower: string, prevCharBeforeSyl?: string): number {
   return analyzeSyllablePhonetics(sylLower, prevCharBeforeSyl).count;
 }
 
-/**
- * Evaluates syllable coda closure & Ukrainian glide vocalization (в -> [ў], й -> [і̯]).
- */
 export function evaluateSyllableClosure(sylLower: string): {
   closed: boolean;
   glideClosed: boolean;
@@ -253,12 +493,10 @@ export function evaluateSyllableClosure(sylLower: string): {
     return { closed: false, glideClosed: false, opennessScore: 1.0 };
   }
 
-  // Ukrainian bilabial [ў] ('в') and palatal [і̯] ('й') at syllable coda vocalize into a semi-vowel glide
   if (GLIDES.has(lastChar)) {
     return { closed: false, glideClosed: true, opennessScore: 0.85 };
   }
 
-  // Sonorants (м, н, л, р) can still carry pitch (voicing), unlike voiceless stops
   if (SONORANTS.has(lastChar)) {
     return { closed: true, glideClosed: false, opennessScore: 0.35 };
   }
@@ -287,7 +525,12 @@ export function stripUkrainianEnding(word: string): string {
 }
 
 /**
- * Multi-tier Ukrainian stress lookup backed by NASU 2.93M wordform database + morphological rules.
+ * Multi-tier Ukrainian stress lookup:
+ * 1. User custom dictionary
+ * 2. Zero-Copy Binary Stress Diff Index (/stress-diff.bin via DataView O(log N))
+ * 3. Extended NASU database (if loaded)
+ * 4. Synchronous bootstrap dictionary (9,169 words)
+ * 5. Morphological heuristic fallback (`detectStress`)
  */
 export function lookupWordStress(
   cleanWord: string,
@@ -302,7 +545,20 @@ export function lookupWordStress(
     return { primary: idx };
   }
 
-  // 2. Extended NASU database (if loaded in memory)
+  // 2. Zero-Copy Binary Stress Diff Index (O(log N) over ArrayBuffer DataView)
+  if (binaryDiffView) {
+    const binHit = lookupBinaryStressDiff(cleanWord);
+    if (binHit !== null) {
+      const primary = Math.max(0, Math.min(totalVowels - 1, binHit.primary));
+      if (binHit.isHomograph && extendedStressDB?.multi[cleanWord]) {
+        const valid = extendedStressDB.multi[cleanWord].filter(i => i >= 0 && i < totalVowels);
+        return { primary, candidates: valid.length > 1 ? valid : undefined };
+      }
+      return { primary };
+    }
+  }
+
+  // 3. Extended NASU database (if loaded in memory)
   if (extendedStressDB) {
     const multi = extendedStressDB.multi[cleanWord];
     if (multi && multi.length > 0) {
@@ -338,18 +594,20 @@ export function lookupWordStress(
     }
   }
 
-  // 3. Synchronous bootstrap dictionary (9,169 high-frequency short words)
+  // 4. Synchronous bootstrap dictionary (9,169 high-frequency short words)
   if ((globalDictionary as Record<string, number>)[cleanWord] !== undefined) {
     const idx = (globalDictionary as Record<string, number>)[cleanWord];
     return { primary: Math.max(0, Math.min(totalVowels - 1, idx)) };
   }
 
-  // 4. Morphological fallback
+  // 5. Morphological fallback
   return { primary: detectStress(cleanWord) };
 }
 
 /**
- * Morphologically enhanced Ukrainian stress heuristic.
+ * Morphologically enhanced Ukrainian stress heuristic (Core v2.5).
+ * Fix #2: Narrowed final-stress verbal endings so disyllabic verbs like ма́ла, гра́ла, ста́вив
+ * retain root stress (0) instead of being pushed to n - 1.
  */
 export function detectStress(word: string): number {
   const wordLower = word.toLowerCase().replace(/[\u0301'’ʼ‘`]/g, '');
@@ -361,38 +619,53 @@ export function detectStress(word: string): number {
   const n = vowelIndices.length;
   if (n <= 1) return 0;
 
-  // 1. Prefix "ви-" in verbs/nouns often pulls stress to the first syllable (e.g., ви́їхав, ви́бір)
-  if (wordLower.startsWith('ви') && n >= 2 && (wordLower.endsWith('ти') || wordLower.endsWith('в') || wordLower.endsWith('ла') || wordLower.endsWith('ли'))) {
+  // 1. Prefix "ви-" in verbs/nouns pulls stress to the first syllable (e.g., ви́їхав, ви́бір)
+  if (
+    wordLower.startsWith('ви') &&
+    n >= 2 &&
+    (wordLower.endsWith('ти') ||
+      wordLower.endsWith('в') ||
+      wordLower.endsWith('ла') ||
+      wordLower.endsWith('ло') ||
+      wordLower.endsWith('ли'))
+  ) {
     return 0;
   }
 
-  // 2. Past tense verbs & specific final-stress suffixes (-ив, -их, -ов, -ла, -ло, -ли, -уть, -ять, -іть, -имо, -ете)
+  // 2. Strictly oxytone verbal & nominal endings (-имо, -ете, -узь, -тя/-ття except -ання)
   if (
-    wordLower.endsWith('ив') || wordLower.endsWith('их') || wordLower.endsWith('ов') ||
-    wordLower.endsWith('ла') || wordLower.endsWith('ло') || wordLower.endsWith('ли') ||
-    wordLower.endsWith('имо') || wordLower.endsWith('ете') || wordLower.endsWith('узь') ||
-    wordLower.endsWith('ання') === false && (wordLower.endsWith('тя') || wordLower.endsWith('ття'))
+    wordLower.endsWith('имо') ||
+    wordLower.endsWith('ете') ||
+    wordLower.endsWith('узь') ||
+    (!wordLower.endsWith('ання') && (wordLower.endsWith('тя') || wordLower.endsWith('ття')))
   ) {
     return n - 1;
   }
 
-  // 3. Polysyllabic verbal nouns on -ння, -ття, -ість, -ування, -ювання (penultimate stress)
+  // 3. Past tense verbs (-ла, -ло, -ли, -ив, -ов), verbal nouns (-ння, -ість, -увати) & adjectives (-ський):
+  // Penultimate stress Math.max(0, n - 2) -> gives 0 for disyllabic forms (ма́ла, гра́ла, ста́вив)
+  // and n - 2 for polysyllabic forms (чита́ла, говори́в, розумі́ння).
   if (
-    wordLower.endsWith('ння') || wordLower.endsWith('ість') ||
-    wordLower.endsWith('увати') || wordLower.endsWith('ювати')
+    wordLower.endsWith('ла') ||
+    wordLower.endsWith('ло') ||
+    wordLower.endsWith('ли') ||
+    wordLower.endsWith('ив') ||
+    wordLower.endsWith('ов') ||
+    wordLower.endsWith('ння') ||
+    wordLower.endsWith('ість') ||
+    wordLower.endsWith('увати') ||
+    wordLower.endsWith('ювати') ||
+    wordLower.endsWith('ський') ||
+    wordLower.endsWith('цький') ||
+    wordLower.endsWith('зький') ||
+    wordLower.endsWith('ська') ||
+    wordLower.endsWith('цька') ||
+    wordLower.endsWith('зька')
   ) {
     return Math.max(0, n - 2);
   }
 
-  // 4. Adjectives on -ський, -цький, -зький, -овий, -евий
-  if (
-    wordLower.endsWith('ський') || wordLower.endsWith('цький') || wordLower.endsWith('зький') ||
-    wordLower.endsWith('ська') || wordLower.endsWith('цька') || wordLower.endsWith('зька')
-  ) {
-    return Math.max(0, n - 2);
-  }
-
-  // 5. Standard Ukrainian statistical distribution
+  // 4. Standard Ukrainian statistical distribution
   if (n === 2) return 0;
   if (n === 3) return 1;
 
@@ -415,7 +688,6 @@ export function getSyllableWeight(syllable: Syllable): number {
     ? syllable.articulatoryLoad
     : Math.max(0, Kh * (syllable.consonants - 1));
 
-  // Narrow high vowels (і, и, у) require less jaw opening and articulate faster in dense lines
   const vowelSpeedMod = syllable.vowelCode && FAST_NARROW_VOWELS.has(syllable.vowelCode) ? -0.05 : 0;
 
   const weight = stressWeight + clusterLoad + Gh * closedWeight - Xh * openWeight + vowelSpeedMod;
@@ -467,7 +739,7 @@ function detectMeterAndScheme(syllables: Syllable[]): { meterName: string; schem
 /**
  * Extracts phonetic rhyme signature (assonant + consonant tail from last stressed syllable).
  */
-function extractRhymeSignature(syllables: Syllable[]): string {
+export function extractRhymeSignature(syllables: Syllable[]): string {
   if (syllables.length === 0) return '';
   let lastStressedIdx = -1;
   for (let i = syllables.length - 1; i >= 0; i--) {
@@ -496,6 +768,48 @@ function extractRhymeSignature(syllables: Syllable[]): string {
   return tailText;
 }
 
+const DEFAULT_EMPTY_DICT: Record<string, number> = {};
+
+/**
+ * Incremental Dirty-Line Cached wrapper around `analyzeText`.
+ * Reuses previously computed ProsodyMetrics in O(1) for unchanged lines.
+ */
+export function analyzeTextCached(
+  text: string,
+  bpm: number,
+  beats: number,
+  dictionary: Record<string, number> = DEFAULT_EMPTY_DICT,
+  subdivisions: number = 4
+): ProsodyMetrics {
+  let dictVer = 0;
+  if (dictionary !== DEFAULT_EMPTY_DICT && dictionary !== cachedDictRef) {
+    const keys = Object.keys(dictionary);
+    if (keys.length > 0) {
+      cachedDictRef = dictionary;
+      cachedDictVersion++;
+      dictVer = cachedDictVersion;
+    }
+  } else if (dictionary === cachedDictRef) {
+    dictVer = cachedDictVersion;
+  }
+  const dbFlag = (binaryDiffView ? 2 : 0) | (extendedStressDB ? 1 : 0);
+  const cacheKey = `${bpm}:${beats}:${subdivisions}:${dictVer}:${dbFlag}::${text}`;
+  const existing = lineMetricsCache.get(cacheKey);
+  if (existing) {
+    return existing;
+  }
+
+  const computed = analyzeText(text, bpm, beats, dictionary, subdivisions);
+  if (lineMetricsCache.size >= MAX_LINE_CACHE_SIZE) {
+    const oldestKey = lineMetricsCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      lineMetricsCache.delete(oldestKey);
+    }
+  }
+  lineMetricsCache.set(cacheKey, computed);
+  return computed;
+}
+
 export function analyzeText(
   text: string,
   bpm: number,
@@ -508,7 +822,6 @@ export function analyzeText(
   let pauseCount = 0;
   let totalPauseWeight = 0;
 
-  // Tokenize keeping all Ukrainian letters, combining acute accent \u0301, and all apostrophe variants
   const tokenRegex = /([^a-zA-Zа-яА-ЯіїєґІЇЄҐ\u0301'’ʼ‘`]+)/;
   const parts = text.split(tokenRegex);
 
@@ -568,14 +881,13 @@ export function analyzeText(
       const cleanWord = part.toLowerCase().replace(/\u0301/g, '').replace(/[’ʼ‘`]/g, "'");
       let wordCandidateStresses: number[] | undefined = undefined;
 
-      // 2. Multi-tier Dictionary & Stem/Suffix lookup (if no manual \u0301 in text)
+      // 2. Multi-tier Dictionary & Zero-Copy Binary Diff lookup (if no manual \u0301 in text)
       if (stressIndex === undefined && vowelGraphemeIndices.length > 0) {
         const lookup = lookupWordStress(cleanWord, vowelGraphemeIndices.length, dictionary);
         stressIndex = lookup.primary;
         wordCandidateStresses = lookup.candidates;
       }
 
-      // Clamp stressIndex if out of bounds
       if (stressIndex !== undefined && vowelGraphemeIndices.length > 0) {
         stressIndex = Math.max(0, Math.min(vowelGraphemeIndices.length - 1, stressIndex));
       }
@@ -584,14 +896,12 @@ export function analyzeText(
       if (vowelGraphemeIndices.length === 0) {
         const { count: consCount } = analyzeSyllablePhonetics(cleanWord);
         if (allSyllables.length > 0 && (cleanWord === 'ж' || cleanWord === 'б')) {
-          // Enclitics ("ж", "б") attach to the preceding word
           const prevSyl = allSyllables[allSyllables.length - 1];
           prevSyl.consonants += consCount;
           prevSyl.articulatoryLoad = (prevSyl.articulatoryLoad ?? 0) + 0.18;
           prevSyl.closed = true;
           prevSyl.opennessScore = 0.0;
         } else {
-          // Proclitics ("в", "з", "із" vowelless) merge forward into the next word's first syllable
           pendingConsonantsFromProclitic += consCount;
           pendingLoadFromProclitic += 0.12;
         }
@@ -609,22 +919,17 @@ export function analyzeText(
         return;
       }
 
-      // 4. Level 1 Cross-Word Resyllabification (Sandhi):
-      // If the current word starts with a vowel and there was no punctuation pause,
-      // a trailing consonant from the previous word's last syllable flows into this syllable's onset!
+      // 4. Level 1 Cross-Word Resyllabification (Sandhi)
       const startsWithVowelSound = VOWELS.has(graphemes[0][0].toLowerCase()) && pendingConsonantsFromProclitic === 0;
       if (startsWithVowelSound && !lastSeparatorHadPause && allSyllables.length > 0) {
         const prevSyl = allSyllables[allSyllables.length - 1];
         if (prevSyl.closed || prevSyl.glideClosed) {
-          // Resyllabify across word boundary: previous syllable opens up acoustically!
           prevSyl.closed = false;
           prevSyl.glideClosed = false;
-          prevSyl.opennessScore = 0.95; // Continuous vocalic flow across word boundary
+          prevSyl.opennessScore = 0.95;
         }
       }
 
-      // Also if the previous word ended in a vowel and this word is "в" + consonant (e.g. "моя врода"),
-      // Ukrainian vocalizes initial 'в' into [ў] closing the previous vowel gently instead of hard onset cluster
       const firstCharLower = graphemes[0][0].toLowerCase();
       const secondCharLower = graphemes.length > 1 ? graphemes[1][0].toLowerCase() : '';
       let initialVGlideTransferred = false;
@@ -684,7 +989,6 @@ export function analyzeText(
         let articulatoryLoad = phonetics.articulatoryLoad;
 
         if (vIdx === 0 && initialVGlideTransferred && consonantsCount > 1) {
-          // 'в' before consonant vocalized into previous vowel as [ў], reducing onset cluster load
           consonantsCount -= 1;
           articulatoryLoad = Math.max(0, articulatoryLoad - 0.15);
         }
@@ -698,13 +1002,12 @@ export function analyzeText(
 
         const closure = evaluateSyllableClosure(sylLower);
         const hasManualAccent = sylFullText.includes('\u0301');
-        // Unstressed functional monosyllables (clitics: і, у, а, та, як, що, не, бо, чи, то, за, на, по, до, зі)
+
+        // Fix #1: Explicit Ukrainian functional clitics check instead of naive open-monosyllable length check
         const isClitic =
           totalVowels === 1 &&
           !hasManualAccent &&
-          cleanWord.length <= 3 &&
-          !closure.closed &&
-          !closure.glideClosed;
+          CLITICS_SET.has(cleanWord);
         const isStressed = !isClitic && stressIndex === vIdx;
         const wordBaseLineIdx = allSyllables.length - vIdx;
         const candidateLineStressIndices =
@@ -748,8 +1051,6 @@ export function analyzeText(
       .map((s, idx) => (s.stressed ? idx : -1))
       .filter(idx => idx !== -1);
 
-    // Detect if the line has an anacrusis (1 or 2 unstressed pickup syllables before the first stressed P-center)
-    // e.g. "І на оно́вленій землі́" -> first stress is at index 2 or 3
     const firstStressIdx = stressedIndices.length > 0 ? stressedIndices[0] : 0;
     const candidateOffsets = [0];
     if (firstStressIdx === 1) candidateOffsets.push(1);
@@ -773,7 +1074,6 @@ export function analyzeText(
           const beatAnchor = anacrusisOffset + Math.round((b * effectiveS) / safeBeats);
           if (beatAnchor < S) candidateSet.add(beatAnchor);
 
-          // Allow secondary strong anchor on half-beat subdivision for dense lines
           if (effectiveS >= safeBeats * 1.5 && safeSubs >= 2) {
             const subAnchor = anacrusisOffset + Math.round(((b + 0.5) * effectiveS) / safeBeats);
             if (subAnchor < S) candidateSet.add(subAnchor);
@@ -781,8 +1081,6 @@ export function analyzeText(
         }
       }
 
-      // Also check P-center isochrony: if stressed syllables themselves form an even chain
-      // (intervals of 2 or 3 syllables between stresses), reward that alignment
       const hits = stressedIndices.filter(idx => candidateSet.has(idx)).length;
       const score = stressedIndices.length > 0 ? hits / stressedIndices.length : 1;
 
@@ -795,10 +1093,6 @@ export function analyzeText(
 
     detectedAnacrusis = bestOffset;
 
-    // Beat-Adaptive Double-Stress / Homograph Resolution:
-    // If a word has multiple valid stresses in the NASU dictionary (e.g., за́мок/замо́к, по́ми́лка, за́вжди́)
-    // and its default stress is off-beat while an alternative valid stress lands directly on bestStrongSet,
-    // automatically shift stress to the beat-aligned syllable!
     for (let i = 0; i < S; i++) {
       const syl = allSyllables[i];
       if (syl.stressed && syl.candidateLineStressIndices && !bestStrongSet.has(i)) {
@@ -814,7 +1108,6 @@ export function analyzeText(
       .map((s, idx) => (s.stressed ? idx : -1))
       .filter(idx => idx !== -1);
 
-    // Check if P-center intervals between stressed syllables are isochronous (e.g., all intervals are 2 or 3 syllables)
     let isIsochronousChain = false;
     if (updatedStressedIndices.length >= 2) {
       const intervals: number[] = [];
@@ -849,8 +1142,6 @@ export function analyzeText(
 
   const S_eff = allSyllables.reduce((acc, s) => acc + getSyllableWeight(s), 0) + totalPauseWeight;
 
-  // Acoustic openness (O) uses opennessScore (accounting for sandhi & vocalized glides [ў]/[і̯])
-  // plus resonance bonus for wide cantilena vowels (а, о)
   const totalOpenness = allSyllables.reduce((acc, s) => {
     const baseOpen = s.opennessScore ?? (s.closed ? 0 : 1);
     const resonanceBonus = s.vowelCode && OPEN_RESONANT_VOWELS.has(s.vowelCode) ? 0.08 : 0;
@@ -864,13 +1155,12 @@ export function analyzeText(
   const SD = safeBeats > 0 ? S_eff / safeBeats : 0;
   const r = safeBeats > 0 ? (S_eff * bpm) / (60 * safeBeats) : 0;
 
-  // Average biomechanical cluster load per syllable directly informs rMax
+  // Fix #3: Smooth asymptotic decay for rMax without hard 0.5 plateau or negative collapse
   const avgClusterLoad = S > 0
     ? allSyllables.reduce((acc, s) => acc + (s.articulatoryLoad ?? 0), 0) / S
     : 0;
 
-  let rMax = Zh * (1 - 1.4 * avgClusterLoad) * (1 + 0.25 * (O - 0.5));
-  if (rMax < 0.5) rMax = 0.5;
+  const rMax = (Zh / (1.0 + K_CLUSTER_DECAY * avgClusterLoad)) * (1.0 + 0.25 * (O - 0.5));
 
   const BPMmax = S_eff > 0 ? (rMax * 60 * safeBeats) / S_eff : 0;
   const singability = Math.min(100, Math.max(0, O * 100));
@@ -927,12 +1217,10 @@ export function compareRhymeSignatures(sigA: string, sigB: string): 'exact' | 'a
 
   if (normA === normB) return 'exact';
 
-  // Assonance / slant rhyme: same stressed initial vowel AND same syllable count in the clause
   const vowelsA = Array.from(normA).filter(ch => VOWELS.has(ch));
   const vowelsB = Array.from(normB).filter(ch => VOWELS.has(ch));
 
   if (vowelsA.length > 0 && vowelsA.length === vowelsB.length && vowelsA[0] === vowelsB[0]) {
-    // Check if the final vowel or final consonant class also aligns
     const lastA = normA[normA.length - 1];
     const lastB = normB[normB.length - 1];
     if (lastA === lastB || (VOWELS.has(lastA) && VOWELS.has(lastB))) {
@@ -957,7 +1245,7 @@ export function formatMetrics(metrics: ProsodyMetrics) {
 }
 
 export function applyAccentsToText(text: string, dictionary: Record<string, number> = {}): string {
-  const metrics = analyzeText(text, 120, 4, dictionary);
+  const metrics = analyzeTextCached(text, 120, 4, dictionary);
   let result = "";
 
   metrics.segments.forEach(segment => {
@@ -993,4 +1281,3 @@ export function applyAccentsToText(text: string, dictionary: Record<string, numb
 
   return result;
 }
-
